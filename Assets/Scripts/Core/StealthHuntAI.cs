@@ -264,6 +264,7 @@ namespace StealthHuntAI
         private bool _guardZoneWaiting;
 
         private Vector3 _spawnPosition;
+        private Quaternion _spawnRotation;
         private Vector3 _lastSeenFlightVector;
         private Vector3 _lastSeenPosition;
         private bool _scanRequested;
@@ -292,6 +293,7 @@ namespace StealthHuntAI
         private void Awake()
         {
             _spawnPosition = transform.position;
+            _spawnRotation = transform.rotation;
             AutoConfigure();
             LoadMorale();
             HuntDirector.RegisterUnit(this);

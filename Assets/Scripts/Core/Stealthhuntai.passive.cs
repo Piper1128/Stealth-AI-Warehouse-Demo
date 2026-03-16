@@ -169,21 +169,59 @@ namespace StealthHuntAI
 
             if (_movement.RemainingDistance < 0.8f)
             {
-                switch (behaviourMode)
+                // Rotate back to original facing direction before resuming
+                Quaternion targetRot = GetHomeRotation();
+                transform.rotation = Quaternion.RotateTowards(
+                    transform.rotation, targetRot, 120f * Time.deltaTime);
+
+                // Wait until roughly aligned before transitioning
+                if (Quaternion.Angle(transform.rotation, targetRot) < 5f)
                 {
-                    case BehaviourMode.Patrol:
-                        TransitionSubState(SubState.Patrolling);
-                        break;
-                    case BehaviourMode.GuardZone:
-                        TransitionSubState(guardZoneWaypointCount > 0
-                            ? SubState.GuardZonePatrol
-                            : SubState.Idle);
-                        break;
-                    default:
-                        TransitionSubState(SubState.Idle);
-                        break;
+                    transform.rotation = targetRot;
+
+                    switch (behaviourMode)
+                    {
+                        case BehaviourMode.Patrol:
+                            TransitionSubState(SubState.Patrolling);
+                            break;
+                        case BehaviourMode.GuardZone:
+                            TransitionSubState(guardZoneWaypointCount > 0
+                                ? SubState.GuardZonePatrol
+                                : SubState.Idle);
+                            break;
+                        default:
+                            TransitionSubState(SubState.Idle);
+                            break;
+                    }
                 }
             }
+        }
+
+        private Quaternion GetHomeRotation()
+        {
+            // Patrol -- face toward next patrol point
+            if (behaviourMode == BehaviourMode.Patrol
+             && patrolPoints != null && patrolPoints.Length > 1)
+            {
+                int next = (_patrolIndex + 1) % patrolPoints.Length;
+                Vector3 dir = patrolPoints[next].position
+                            - patrolPoints[_patrolIndex].position;
+                if (dir.magnitude > 0.1f)
+                    return Quaternion.LookRotation(dir.normalized, Vector3.up);
+            }
+
+            // Guard zone -- face zone center
+            if (behaviourMode == BehaviourMode.GuardZone
+             && guardZoneCenter != null)
+            {
+                Vector3 dir = guardZoneCenter.position - transform.position;
+                dir.y = 0f;
+                if (dir.magnitude > 0.1f)
+                    return Quaternion.LookRotation(dir.normalized, Vector3.up);
+            }
+
+            // Default -- return to spawn rotation
+            return _spawnRotation;
         }
 
         private Vector3 GetHomePosition()
