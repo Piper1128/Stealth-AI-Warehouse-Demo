@@ -248,26 +248,75 @@ namespace StealthHuntAI
                 return;
             }
 
-            ApplySpeedToMovement(_baseAgentSpeed * chaseSpeedMultiplier);
-            MoveTo(_lastKnownPosition);
+            float directDist = _sensor.CanSeeTarget && _target != null
+                ? Vector3.Distance(transform.position, _target.Position)
+                : Vector3.Distance(transform.position, _lastKnownPosition);
 
-            // Use NavMesh remaining distance as primary check.
-            // Also check direct 3D distance as fallback -- this handles the case
-            // where unit is directly above/below last known position (different floor)
-            // and NavMesh path is long (via ramp) but 3D distance is short.
+            // Check if GuardWeapon is attached and has a shoot range
+            var weapon = GetComponent<Demo.GuardWeapon>();
+            float combatRange = weapon != null ? weapon.shootRange * 0.75f : -1f;
+
+            bool inCombatRange = combatRange > 0f
+                && _sensor.CanSeeTarget
+                && directDist <= combatRange;
+
+            if (inCombatRange)
+            {
+                // Transition to Shooting substate
+                TransitionSubState(SubState.Shooting);
+                return;
+            }
+            else
+            {
+                if (_agent != null) _agent.updateRotation = true;
+                ApplySpeedToMovement(_baseAgentSpeed * chaseSpeedMultiplier);
+                MoveTo(_lastKnownPosition);
+            }
+
             float navDist = _movement.RemainingDistance;
-            float directDist = Vector3.Distance(transform.position, _lastKnownPosition);
-
             bool arrived = (navDist < 1.0f) || (directDist < 2.5f && !_movement.HasPath);
 
             if (arrived && !_sensor.CanSeeTarget)
             {
-                // Search around the ACTUAL last known position including its floor level
-                // not from our current position which may be on a different floor
+                if (_agent != null) _agent.updateRotation = true;
                 _searchCenter = _lastKnownPosition;
                 _lastSeenPosition = _lastKnownPosition;
                 _scanRequested = false;
                 TransitionSubState(SubState.Searching);
+            }
+        }
+
+        private void TickShooting()
+        {
+            // Stop moving and face player
+            StopMoving();
+            if (_agent != null) _agent.updateRotation = false;
+
+            if (_target != null && _sensor != null && _sensor.CanSeeTarget)
+            {
+                Vector3 dir = (_target.Position - transform.position);
+                dir.y = 0f;
+                if (dir.magnitude > 0.1f)
+                {
+                    transform.rotation = Quaternion.RotateTowards(
+                        transform.rotation,
+                        Quaternion.LookRotation(dir.normalized),
+                        360f * Time.deltaTime);
+                }
+            }
+
+            // Check if we should go back to pursuing
+            var weapon = GetComponent<Demo.GuardWeapon>();
+            float combatRange = weapon != null ? weapon.shootRange * 0.75f : 15f;
+
+            bool stillInRange = _sensor != null && _sensor.CanSeeTarget
+                && _target != null
+                && Vector3.Distance(transform.position, _target.Position) <= combatRange;
+
+            if (!stillInRange)
+            {
+                if (_agent != null) _agent.updateRotation = true;
+                TransitionSubState(SubState.Pursuing);
             }
         }
 

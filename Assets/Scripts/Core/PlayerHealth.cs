@@ -104,11 +104,18 @@ namespace StealthHuntAI.Demo
         {
             IsDead = true;
 
-            // Disable player movement
-            var cc = GetComponent<UnityEngine.CharacterController>();
-            if (cc != null) cc.enabled = false;
+            // Disable FirstPersonController -- not CharacterController directly
+            // (disabling CC while FPC is active causes Move() on inactive controller error)
+            var fpc = GetComponentInParent<MonoBehaviour>();
+            foreach (var mb in GetComponentsInParent<MonoBehaviour>())
+            {
+                if (mb.GetType().Name == "FirstPersonController")
+                {
+                    mb.enabled = false;
+                    break;
+                }
+            }
 
-            // Tell game manager
             if (_gameManager != null)
                 Invoke(nameof(NotifyDeath), deathDelay);
         }

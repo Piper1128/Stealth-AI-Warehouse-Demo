@@ -62,9 +62,10 @@ namespace StealthHuntAI.Editor
         private SerializedProperty _searchStrategyOverride;
         private SerializedProperty _visitedCellSize;
         private SerializedProperty _animator;
-        private SerializedProperty _animParamAlert;
-        private SerializedProperty _animParamMoving;
-        private SerializedProperty _animParamHostile;
+        private SerializedProperty _animClipAssignments;
+        private SerializedProperty _animTransitionDuration;
+        private string[] _animClipNames = new string[0];
+        private double _lastClipRefresh;
         private SerializedProperty _onBecameSuspicious;
         private SerializedProperty _onBecameHostile;
         private SerializedProperty _onLostTarget;
@@ -102,9 +103,8 @@ namespace StealthHuntAI.Editor
             _searchStrategyOverride = serializedObject.FindProperty("searchStrategyOverride");
             _visitedCellSize = serializedObject.FindProperty("visitedCellSize");
             _animator = serializedObject.FindProperty("animator");
-            _animParamAlert = serializedObject.FindProperty("animParamAlert");
-            _animParamMoving = serializedObject.FindProperty("animParamMoving");
-            _animParamHostile = serializedObject.FindProperty("animParamHostile");
+            _animClipAssignments = serializedObject.FindProperty("animClipAssignments");
+            _animTransitionDuration = serializedObject.FindProperty("animTransitionDuration");
             _onBecameSuspicious = serializedObject.FindProperty("onBecameSuspicious");
             _onBecameHostile = serializedObject.FindProperty("onBecameHostile");
             _onLostTarget = serializedObject.FindProperty("onLostTarget");
@@ -119,6 +119,7 @@ namespace StealthHuntAI.Editor
         {
             BuildStyles();
             serializedObject.Update();
+            EditorGUI.BeginChangeCheck();
 
             var ai = (StealthHuntAI)target;
 
@@ -141,7 +142,8 @@ namespace StealthHuntAI.Editor
                 DrawTestButtons(ai);
             }
 
-            serializedObject.ApplyModifiedProperties();
+            if (EditorGUI.EndChangeCheck())
+                serializedObject.ApplyModifiedProperties();
 
             if (Application.isPlaying)
                 Repaint();
@@ -556,22 +558,135 @@ namespace StealthHuntAI.Editor
             EditorGUILayout.PropertyField(_animator,
                 new GUIContent("Animator", "Auto-detected if left empty"));
 
-            if (Application.isPlaying)
+            EditorGUILayout.PropertyField(_animTransitionDuration,
+                new GUIContent("Transition Duration", "CrossFade blend time between states"));
+
+            // Refresh clip list from Animator Controller every 2 seconds
+            if (EditorApplication.timeSinceStartup - _lastClipRefresh > 2.0)
             {
-                bool found = ai.animator != null;
-                EditorGUILayout.HelpBox(
-                    found
-                        ? "Animator found -- parameters active."
-                        : "No Animator detected. Animation disabled.",
-                    found ? MessageType.Info : MessageType.Warning);
+                _lastClipRefresh = EditorApplication.timeSinceStartup;
+                _animClipNames = GetAnimatorClipNames(ai);
             }
 
-            EditorGUILayout.PropertyField(_animParamAlert,
-                new GUIContent("Alert Param", "Float (0-1) fed from AwarenessLevel"));
-            EditorGUILayout.PropertyField(_animParamMoving,
-                new GUIContent("Moving Param", "Bool set when agent is moving"));
-            EditorGUILayout.PropertyField(_animParamHostile,
-                new GUIContent("Hostile Param", "Bool set in Hostile state"));
+            EditorGUILayout.Space(6);
+            EditorGUILayout.LabelField("Clip Assignments", EditorStyles.boldLabel);
+
+            if (_animClipNames.Length == 0)
+            {
+                EditorGUILayout.HelpBox(
+                    "No Animator Controller found. Assign an Animator with clips above.",
+                    MessageType.Info);
+            }
+            else
+            {
+                EditorGUILayout.HelpBox(
+                    "Drag clips into Animator (no transitions needed). Assign clips to logical state names below.",
+                    MessageType.None);
+            }
+
+            EditorGUILayout.Space(4);
+
+            // Draw each assignment row
+            for (int i = 0; i < _animClipAssignments.arraySize; i++)
+            {
+                SerializedProperty entry = _animClipAssignments.GetArrayElementAtIndex(i);
+                SerializedProperty triggerProp = entry.FindPropertyRelative("trigger");
+                SerializedProperty clipProp = entry.FindPropertyRelative("clipName");
+                SerializedProperty nameProp = entry.FindPropertyRelative("customName");
+
+                bool isCustom = triggerProp.enumValueIndex
+                    == (int)AnimTrigger.Custom;
+
+                EditorGUILayout.BeginHorizontal();
+
+                // Trigger enum dropdown
+                EditorGUILayout.PropertyField(triggerProp, GUIContent.none,
+                    GUILayout.Width(isCustom ? 80 : 110));
+
+                // Custom name field -- only shown for Custom trigger
+                if (isCustom)
+                {
+                    nameProp.stringValue = EditorGUILayout.TextField(
+                        nameProp.stringValue, GUILayout.Width(80));
+                }
+
+                // Clip dropdown
+                if (_animClipNames.Length > 0)
+                {
+                    string current = clipProp.stringValue;
+                    string[] options = new string[_animClipNames.Length + 1];
+                    options[0] = "(none)";
+                    int idx = 0;
+                    for (int j = 0; j < _animClipNames.Length; j++)
+                    {
+                        options[j + 1] = _animClipNames[j];
+                        if (_animClipNames[j] == current) idx = j + 1;
+                    }
+                    int newIdx = EditorGUILayout.Popup(idx, options);
+                    string newClip = newIdx == 0 ? "" : options[newIdx];
+                    if (newClip != current)
+                        clipProp.stringValue = newClip;
+                }
+                else
+                {
+                    clipProp.stringValue = EditorGUILayout.TextField(clipProp.stringValue);
+                }
+
+                // Remove button
+                if (GUILayout.Button("-", GUILayout.Width(22)))
+                {
+                    _animClipAssignments.DeleteArrayElementAtIndex(i);
+                    break;
+                }
+
+                EditorGUILayout.EndHorizontal();
+            }
+
+            EditorGUILayout.Space(4);
+
+            // Add buttons
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button("+ Auto Trigger"))
+            {
+                _animClipAssignments.InsertArrayElementAtIndex(_animClipAssignments.arraySize);
+                var e = _animClipAssignments.GetArrayElementAtIndex(
+                    _animClipAssignments.arraySize - 1);
+                e.FindPropertyRelative("trigger").enumValueIndex = 0;
+                e.FindPropertyRelative("clipName").stringValue = "";
+                e.FindPropertyRelative("customName").stringValue = "";
+            }
+            if (GUILayout.Button("+ Custom"))
+            {
+                _animClipAssignments.InsertArrayElementAtIndex(_animClipAssignments.arraySize);
+                var e = _animClipAssignments.GetArrayElementAtIndex(
+                    _animClipAssignments.arraySize - 1);
+                e.FindPropertyRelative("trigger").enumValueIndex =
+                    (int)AnimTrigger.Custom;
+                e.FindPropertyRelative("clipName").stringValue = "";
+                e.FindPropertyRelative("customName").stringValue = "MyAnim";
+            }
+            EditorGUILayout.EndHorizontal();
+        }
+
+        private string[] GetAnimatorClipNames(StealthHuntAI ai)
+        {
+            Animator anim = ai.animator;
+            if (anim == null)
+                anim = ai.GetComponentInChildren<Animator>();
+            if (anim == null) return new string[0];
+
+            var controller = anim.runtimeAnimatorController;
+            if (controller == null) return new string[0];
+
+            var clips = controller.animationClips;
+            var names = new System.Collections.Generic.List<string>();
+            foreach (var clip in clips)
+            {
+                if (clip != null && !names.Contains(clip.name))
+                    names.Add(clip.name);
+            }
+            names.Sort();
+            return names.ToArray();
         }
 
         // ---------- Events ----------------------------------------------------

@@ -1902,7 +1902,7 @@ MonoBehaviour:
   shootDamage: 34
   shootRange: 40
   takedownKey: 20
-  playerCamera: {fileID: 0}
+  playerCamera: {fileID: 5559608543459116428}
 --- !u!1 &8810566456543500809
 GameObject:
   m_ObjectHideFlags: 0

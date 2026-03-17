@@ -192,7 +192,7 @@ namespace StealthHuntAI.Editor
                 // FOV cone
                 if (showFOV && sensor != null)
                 {
-                    DrawFOVCone(unit.transform, sensor.sightRange, sensor.sightAngle,
+                    DrawFOVCone(unit.transform, sensor, sensor.sightRange, sensor.sightAngle,
                                 new Color(stateColor.r, stateColor.g, stateColor.b, 0.12f));
 
                     // Peripheral ring
@@ -242,10 +242,21 @@ namespace StealthHuntAI.Editor
 
         // ---------- Gizmo helpers ---------------------------------------------
 
-        private void DrawFOVCone(Transform origin, float range, float angle, Color color)
+        private void DrawFOVCone(Transform root, AwarenessSensor sensor,
+                                   float range, float angle, Color color)
         {
+            // Use SightOrigin forward if followHeadBone is enabled
+            Vector3 fwd = (sensor != null && sensor.sightFollowHeadBone
+                        && sensor.SightOrigin != null)
+                ? sensor.SightOrigin.forward
+                : root.forward;
+
+            Vector3 pos = sensor != null && sensor.SightOrigin != null
+                ? sensor.SightOrigin.position
+                : root.position + Vector3.up * 1.4f;
+
             Handles.color = color;
-            int segments = 24;
+            int segments = 32;
             float halfAngle = angle * 0.5f;
 
             Vector3 prev = Vector3.zero;
@@ -253,20 +264,20 @@ namespace StealthHuntAI.Editor
             {
                 float t = (float)i / segments;
                 float a = Mathf.Lerp(-halfAngle, halfAngle, t);
-                Vector3 dir = Quaternion.Euler(0, a, 0) * origin.forward;
-                Vector3 pt = origin.position + dir * range;
+                Vector3 dir = Quaternion.Euler(0, a, 0) * fwd;
+                Vector3 pt = pos + dir * range;
 
                 if (i > 0) Handles.DrawLine(prev, pt);
                 if (i == 0 || i == segments)
-                    Handles.DrawLine(origin.position, pt);
+                    Handles.DrawLine(pos, pt);
 
                 prev = pt;
             }
 
-            // Solid fill using DrawSolidArc
+            // Solid fill
             Handles.color = new Color(color.r, color.g, color.b, color.a * 0.5f);
-            Handles.DrawSolidArc(origin.position, Vector3.up,
-                Quaternion.Euler(0, -halfAngle, 0) * origin.forward,
+            Handles.DrawSolidArc(pos, Vector3.up,
+                Quaternion.Euler(0, -halfAngle, 0) * fwd,
                 angle, range);
         }
 

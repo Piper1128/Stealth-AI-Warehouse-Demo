@@ -28,10 +28,9 @@ namespace StealthHuntAI.Demo
 
         private StealthHuntAI _ai;
         private AwarenessSensor _sensor;
-        private Animator _animator;
+        private Animator _animator; // fallback only
         private NavMeshAgent _agent;
 
-        private static readonly int HashIsDead = Animator.StringToHash("isDead");
 
         // ---------- Unity lifecycle -------------------------------------------
 
@@ -53,6 +52,9 @@ namespace StealthHuntAI.Demo
             if (IsDead) return;
 
             CurrentHealth -= amount;
+
+            // Play hit reaction if assigned
+            _ai?.PlayAnimState("HitReaction", 0.05f);
 
             // Gunshot makes guard instantly alert
             if (_ai != null)
@@ -110,9 +112,11 @@ namespace StealthHuntAI.Demo
                 _agent.enabled = false;
             }
 
-            // Trigger death animation
-            if (_animator != null)
-                _animator.SetBool(HashIsDead, true);
+            // Trigger death animation via StealthHuntAI CrossFade system
+            if (_ai != null)
+                _ai.PlayDeathAnim();
+            else if (_animator != null)
+                _animator.CrossFade("Death", 0.1f);
 
             // Destroy after animation plays
             Destroy(gameObject, 4f);

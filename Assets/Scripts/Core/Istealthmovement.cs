@@ -36,6 +36,9 @@ namespace StealthHuntAI
         /// <summary>Current movement speed in world units per second.</summary>
         float Speed { get; set; }
 
+        /// <summary>Actual movement velocity this frame (0 when standing still).</summary>
+        float ActualSpeed { get; }
+
         /// <summary>
         /// If true, StealthHuntAI and the morale system may override Speed.
         /// Set to false on custom providers that manage their own speed internally.
@@ -89,6 +92,9 @@ namespace StealthHuntAI
             get => _agent != null ? _agent.speed : baseSpeed;
             set { if (_agent != null) _agent.speed = value; }
         }
+
+        public float ActualSpeed
+            => _agent != null ? _agent.velocity.magnitude : 0f;
 
         public void MoveTo(Vector3 position)
         {

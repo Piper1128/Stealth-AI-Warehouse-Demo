@@ -5,6 +5,33 @@ using UnityEngine.Events;
 
 namespace StealthHuntAI
 {
+    /// <summary>Logical trigger that determines when this clip plays.</summary>
+    public enum AnimTrigger
+    {
+        Idle,           // Passive, standing still
+        Walk,           // Passive, moving
+        Return,         // Passive, returning to spawn/patrol
+        Alerted,        // Suspicious, stopping to look
+        Investigate,    // Suspicious, moving toward last known position
+        Search,         // Suspicious, searching area
+        Pursuing,       // Hostile, chasing player
+        Shooting,       // Hostile, stopped to engage
+        LostTarget,     // Hostile, lost player
+        Death,          // On death
+        Custom          // Manual only -- call PlayAnimState("name") from code
+    }
+
+    /// <summary>Maps an AnimTrigger to an Animator clip name.</summary>
+    [System.Serializable]
+    public class AnimClipAssignment
+    {
+        public AnimTrigger trigger = AnimTrigger.Idle;
+        public string clipName = "";
+
+        [Tooltip("Only used when trigger is Custom. Name used with PlayAnimState().")]
+        public string customName = "";
+    }
+
     // ---------- Enums ---------------------------------------------------------
 
     public enum AlertState
@@ -30,6 +57,7 @@ namespace StealthHuntAI
         // Hostile
         Pursuing,
         Flanking,
+        Shooting,
         LostTarget
     }
 
@@ -170,11 +198,14 @@ namespace StealthHuntAI
         [Tooltip("Dynamic = assigned at runtime. Set a fixed role for specialist units.")]
         public SquadRole manualRole = SquadRole.Dynamic;
 
-        [Header("Animation (auto-detected)")]
+        [Header("Animation")]
         public Animator animator;
-        public string animParamAlert = "alertLevel";
-        public string animParamMoving = "isMoving";
-        public string animParamHostile = "isHostile";
+
+        [Tooltip("Crossfade transition duration between animation states.")]
+        [Range(0f, 0.5f)] public float animTransitionDuration = 0.15f;
+
+        [Tooltip("Map state names to animation clips. Add/remove as needed.")]
+        public List<AnimClipAssignment> animClipAssignments = new List<AnimClipAssignment>();
 
         [Header("Morale")]
         [Tooltip("Starting morale level. 1 = confident, 0 = broken.")]
@@ -252,6 +283,7 @@ namespace StealthHuntAI
         private Vector3 _currentSearchDest;
         private bool _hasSearchDest;
         private int _searchPassCount;
+        private string _currentAnimState = "";
         private float _lookAroundTimer;
         private Quaternion _lookAroundTarget;
         private bool _hasLookTarget;
@@ -265,6 +297,7 @@ namespace StealthHuntAI
 
         private Vector3 _spawnPosition;
         private Quaternion _spawnRotation;
+        private NavMeshAgent _agent;
         private Vector3 _lastSeenFlightVector;
         private Vector3 _lastSeenPosition;
         private bool _scanRequested;
@@ -290,10 +323,17 @@ namespace StealthHuntAI
 
         // ---------- Unity lifecycle -------------------------------------------
 
+        // Called by Unity when component is first added in editor
+        private void Reset()
+        {
+            EnsureDefaultAnimAssignments();
+        }
+
         private void Awake()
         {
             _spawnPosition = transform.position;
             _spawnRotation = transform.rotation;
+            _agent = GetComponent<NavMeshAgent>();
             AutoConfigure();
             LoadMorale();
             HuntDirector.RegisterUnit(this);
@@ -362,9 +402,7 @@ namespace StealthHuntAI
             if (animator != null)
             {
                 _hasAnimator = true;
-                _hashAlert = Animator.StringToHash(animParamAlert);
-                _hashMoving = Animator.StringToHash(animParamMoving);
-                _hashHostile = Animator.StringToHash(animParamHostile);
+                // CrossFade system -- no parameter hashing needed
             }
 
             _sensor = GetComponent<AwarenessSensor>();
@@ -593,6 +631,7 @@ namespace StealthHuntAI
                 case SubState.Searching: TickSearching(); break;
                 case SubState.Pursuing: TickPursuing(); break;
                 case SubState.Flanking: TickFlanking(); break;
+                case SubState.Shooting: TickShooting(); break;
                 case SubState.LostTarget: TickLostTarget(); break;
             }
         }
@@ -607,6 +646,8 @@ namespace StealthHuntAI
             _stateTimer = 0f;
             _searchTimer = 0f;
             _hasLookTarget = false;
+            // Always re-enable agent rotation on state change
+            if (_agent != null) _agent.updateRotation = true;
             _lookAroundTimer = 0f;
             _hasPendingNudge = false;
 
@@ -644,6 +685,8 @@ namespace StealthHuntAI
         {
             CurrentSubState = newSub;
             _stateTimer = 0f;
+            // Always re-enable agent rotation on state change
+            if (_agent != null) _agent.updateRotation = true;
         }
 
         // ---------- Movement --------------------------------------------------
@@ -693,21 +736,131 @@ namespace StealthHuntAI
         {
             if (!_hasAnimator) return;
 
-            bool moving = _movement != null && _movement.Speed > 0.1f && _movement.HasPath;
+            // Use actual agent velocity magnitude -- not configured speed
+            // This correctly detects when unit is standing still vs moving
+            float velocity = _movement != null ? _movement.ActualSpeed : 0f;
+            bool moving = velocity > 0.1f;
 
-            SafeSetFloat(_hashAlert, AwarenessLevel);
-            SafeSetBool(_hashMoving, moving);
-            SafeSetBool(_hashHostile, CurrentAlertState == AlertState.Hostile);
+            string target = GetTargetAnimState(moving);
+            if (target == _currentAnimState || string.IsNullOrEmpty(target)) return;
+
+            _currentAnimState = target;
+            try { animator.CrossFade(target, animTransitionDuration); } catch { }
         }
 
-        private void SafeSetFloat(int hash, float value)
+        private string GetTargetAnimState(bool moving)
         {
-            try { animator.SetFloat(hash, value); } catch { }
+            AnimTrigger trigger;
+
+            switch (CurrentAlertState)
+            {
+                case AlertState.Hostile:
+                    if (CurrentSubState == SubState.Shooting)
+                        trigger = AnimTrigger.Shooting;
+                    else if (CurrentSubState == SubState.Pursuing
+                          || CurrentSubState == SubState.Flanking)
+                        trigger = AnimTrigger.Pursuing;
+                    else
+                        trigger = AnimTrigger.LostTarget;
+                    break;
+
+                case AlertState.Suspicious:
+                    if (CurrentSubState == SubState.Investigating)
+                        trigger = AnimTrigger.Investigate;
+                    else if (CurrentSubState == SubState.Searching)
+                        trigger = AnimTrigger.Search;
+                    else
+                        trigger = AnimTrigger.Alerted;
+                    break;
+
+                default: // Passive
+                    if (CurrentSubState == SubState.Returning)
+                        trigger = AnimTrigger.Return;
+                    else if (moving)
+                        trigger = AnimTrigger.Walk;
+                    else
+                        trigger = AnimTrigger.Idle;
+                    break;
+            }
+
+            return GetClip(trigger) ?? "";
         }
 
-        private void SafeSetBool(int hash, bool value)
+        /// <summary>Returns clip name for a Custom entry by customName.</summary>
+        public string GetCustomClip(string customName)
         {
-            try { animator.SetBool(hash, value); } catch { }
+            for (int i = 0; i < animClipAssignments.Count; i++)
+            {
+                var a = animClipAssignments[i];
+                if (a.trigger == AnimTrigger.Custom
+                 && a.customName == customName
+                 && !string.IsNullOrEmpty(a.clipName))
+                    return a.clipName;
+            }
+            return null;
+        }
+
+        /// <summary>Returns clip name for a given trigger. Returns null if not assigned.</summary>
+        public string GetClip(AnimTrigger trigger)
+        {
+            for (int i = 0; i < animClipAssignments.Count; i++)
+            {
+                var a = animClipAssignments[i];
+                if (a.trigger == trigger && !string.IsNullOrEmpty(a.clipName))
+                    return a.clipName;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Play a Custom clip by its customName.
+        /// Example: ai.PlayAnimState("Shoot")
+        /// </summary>
+        public void PlayAnimState(string customName, float transitionDuration = -1f)
+        {
+            if (!_hasAnimator) return;
+            for (int i = 0; i < animClipAssignments.Count; i++)
+            {
+                var a = animClipAssignments[i];
+                if (a.trigger == AnimTrigger.Custom
+                 && a.customName == customName
+                 && !string.IsNullOrEmpty(a.clipName))
+                {
+                    float dur = transitionDuration >= 0f ? transitionDuration : animTransitionDuration;
+                    try { animator.CrossFade(a.clipName, dur); } catch { }
+                    return;
+                }
+            }
+        }
+
+        /// <summary>Called by GuardHealth when unit dies.</summary>
+        public void PlayDeathAnim()
+        {
+            if (!_hasAnimator) return;
+            string clip = GetClip(AnimTrigger.Death);
+            if (string.IsNullOrEmpty(clip)) return;
+            try { animator.CrossFade(clip, 0.1f); } catch { }
+        }
+
+        /// <summary>Ensure default clip assignments exist on first setup.</summary>
+        private void EnsureDefaultAnimAssignments()
+        {
+            var defaults = new[]
+            {
+                AnimTrigger.Idle, AnimTrigger.Walk, AnimTrigger.Return,
+                AnimTrigger.Alerted, AnimTrigger.Investigate, AnimTrigger.Search,
+                AnimTrigger.Pursuing, AnimTrigger.Shooting, AnimTrigger.LostTarget,
+                AnimTrigger.Death
+            };
+
+            foreach (var t in defaults)
+            {
+                bool exists = false;
+                for (int i = 0; i < animClipAssignments.Count; i++)
+                    if (animClipAssignments[i].trigger == t) { exists = true; break; }
+                if (!exists)
+                    animClipAssignments.Add(new AnimClipAssignment { trigger = t, clipName = "" });
+            }
         }
 
         // ---------- Public API ------------------------------------------------

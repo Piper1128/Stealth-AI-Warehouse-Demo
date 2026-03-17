@@ -25,6 +25,10 @@ namespace StealthHuntAI
         [Tooltip("Horizontal spread of multi-point sight check in world units.")]
         [Range(0.1f, 1f)] public float sightCheckSpread = 0.4f;
 
+        [Tooltip("If true, FOV cone follows the head bone rotation from animation. " +
+                 "If false, FOV uses root transform forward (NavMeshAgent rotation).")]
+        public bool sightFollowHeadBone = true;
+
         [Header("Sight Detection")]
         [Tooltip("How fast awareness rises when target is fully visible at close range.")]
         [Range(0.1f, 10f)] public float sightRiseSpeed = 2.0f;
@@ -208,11 +212,10 @@ namespace StealthHuntAI
             if (_origin == null) return false;
 
             Vector3 eyePos = _origin.position;
-            // Always use root transform forward for angle -- child objects may
-            // have incorrect world forward if created without explicit rotation
-            Vector3 forward = _origin.parent != null
-                ? _origin.parent.forward
-                : _origin.forward;
+            // FOV forward: either follows head bone animation or root NavMeshAgent rotation
+            Vector3 forward = (sightFollowHeadBone && _origin != null)
+                ? _origin.forward
+                : transform.forward;
 
             Vector3 toTarget = _target.PerceptionOrigin - eyePos;
             float distance = toTarget.magnitude;
@@ -364,9 +367,10 @@ namespace StealthHuntAI
                     Vector3.Distance(transform.position, _target.Position) / sightRange) * 0.5f;
 
                 Vector3 toTarget = _target.PerceptionOrigin - _origin.position;
-                Vector3 fwd = _origin.parent != null
-                    ? _origin.parent.forward : _origin.forward;
-                float angle = Vector3.Angle(fwd, toTarget);
+                Vector3 fwdAware = (sightFollowHeadBone && _origin != null)
+                    ? _origin.forward
+                    : transform.forward;
+                float angle = Vector3.Angle(fwdAware, toTarget);
                 bool inCone = angle <= sightAngle * 0.5f;
                 float angleFactor = inCone
                     ? 1f - Mathf.Clamp01(angle / (sightAngle * 0.5f)) * 0.3f
@@ -652,11 +656,13 @@ namespace StealthHuntAI
             // FOV cone
             Gizmos.color = new Color(1f, 1f, 0f, 0.08f);
             float halfAngle = sightAngle * 0.5f * Mathf.Deg2Rad;
-            Vector3 left = Quaternion.Euler(0f, -sightAngle * 0.5f, 0f) * transform.forward;
-            Vector3 right = Quaternion.Euler(0f, sightAngle * 0.5f, 0f) * transform.forward;
+            Vector3 gizFwd = (sightFollowHeadBone && _origin != null)
+                ? _origin.forward : transform.forward;
+            Vector3 left = Quaternion.Euler(0f, -sightAngle * 0.5f, 0f) * gizFwd;
+            Vector3 right = Quaternion.Euler(0f, sightAngle * 0.5f, 0f) * gizFwd;
             Gizmos.DrawRay(origin.position, left * sightRange);
             Gizmos.DrawRay(origin.position, right * sightRange);
-            Gizmos.DrawRay(origin.position, transform.forward * sightRange);
+            Gizmos.DrawRay(origin.position, gizFwd * sightRange);
 
             // Hearing range
             Gizmos.color = new Color(0f, 0.8f, 1f, 0.04f);

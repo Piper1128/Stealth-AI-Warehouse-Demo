@@ -167,17 +167,25 @@ namespace StealthHuntAI
             ApplySpeedToMovement(_baseAgentSpeed * patrolSpeedMultiplier);
             MoveTo(GetHomePosition());
 
-            if (_movement.RemainingDistance < 0.8f)
+            // Use both RemainingDistance and direct distance as fallback
+            float distToHome = Vector3.Distance(transform.position, GetHomePosition());
+            bool nearHome = _movement.RemainingDistance < 0.8f || distToHome < 0.8f;
+
+            if (nearHome)
             {
-                // Rotate back to original facing direction before resuming
+                // Disable agent rotation so we can rotate manually
+                if (_agent != null) _agent.updateRotation = false;
+
                 Quaternion targetRot = GetHomeRotation();
                 transform.rotation = Quaternion.RotateTowards(
-                    transform.rotation, targetRot, 120f * Time.deltaTime);
+                    transform.rotation, targetRot, 180f * Time.deltaTime);
 
-                // Wait until roughly aligned before transitioning
-                if (Quaternion.Angle(transform.rotation, targetRot) < 5f)
+                if (Quaternion.Angle(transform.rotation, targetRot) < 3f)
                 {
                     transform.rotation = targetRot;
+
+                    // Re-enable agent rotation before leaving state
+                    if (_agent != null) _agent.updateRotation = true;
 
                     switch (behaviourMode)
                     {
@@ -194,6 +202,10 @@ namespace StealthHuntAI
                             break;
                     }
                 }
+            }
+            else if (_agent != null && !_agent.updateRotation)
+            {
+                _agent.updateRotation = true;
             }
         }
 
