@@ -17,6 +17,7 @@ namespace StealthHuntAI.Editor
         private bool _foldAnimation = false;
         private bool _foldEvents = false;
         private bool _foldMorale = false;
+        private bool _foldCombat = false;
         private bool _foldAdvanced = false;
 
         // ---------- Styles ----------------------------------------------------
@@ -39,6 +40,7 @@ namespace StealthHuntAI.Editor
         private SerializedProperty _sightAngle;
         private SerializedProperty _hearingRange;
         private SerializedProperty _preset;
+        private SerializedProperty _combatOverride;
         private SerializedProperty _sightDetectionSpeed;
         private SerializedProperty _sightDecaySpeed;
         private SerializedProperty _suspicionThreshold;
@@ -77,10 +79,14 @@ namespace StealthHuntAI.Editor
 
         private void OnEnable()
         {
+            if (Application.isPlaying)
+                EditorApplication.update += Repaint;
+
             _sightRange = serializedObject.FindProperty("sightRange");
             _sightAngle = serializedObject.FindProperty("sightAngle");
             _hearingRange = serializedObject.FindProperty("hearingRange");
             _preset = serializedObject.FindProperty("preset");
+            _combatOverride = serializedObject.FindProperty("combatBehaviourOverride");
             _sightDetectionSpeed = serializedObject.FindProperty("sightDetectionSpeed");
             _sightDecaySpeed = serializedObject.FindProperty("sightDecaySpeed");
             _suspicionThreshold = serializedObject.FindProperty("suspicionThreshold");
@@ -114,6 +120,11 @@ namespace StealthHuntAI.Editor
             _onReturnedToPassive = serializedObject.FindProperty("onReturnedToPassive");
             _startingMorale = serializedObject.FindProperty("startingMorale");
             _persistMorale = serializedObject.FindProperty("persistMorale");
+        }
+
+        private void OnDisable()
+        {
+            EditorApplication.update -= Repaint;
         }
 
         // ---------- Main draw -------------------------------------------------
@@ -154,6 +165,7 @@ namespace StealthHuntAI.Editor
             DrawSection("Animation", ref _foldAnimation, () => DrawAnimation(ai));
             DrawSection("Events", ref _foldEvents, () => DrawEvents());
             DrawSection("Morale", ref _foldMorale, () => DrawMorale(ai));
+            DrawSection("Combat Pack", ref _foldCombat, () => DrawCombat());
             DrawSection("Advanced", ref _foldAdvanced, () => DrawAdvanced());
 
             if (Application.isPlaying)
@@ -972,6 +984,59 @@ namespace StealthHuntAI.Editor
         }
 
         // ---------- Advanced --------------------------------------------------
+
+        private void DrawCombat()
+        {
+            EditorGUILayout.PropertyField(_combatOverride, new GUIContent(
+                "Combat Behaviour Override",
+                "Assign a MonoBehaviour implementing ICombatBehaviour to override " +
+                "default Hostile behaviour. Requires Combat Pack or custom implementation."));
+
+            if (_combatOverride.objectReferenceValue == null)
+            {
+                EditorGUILayout.HelpBox(
+                    "No combat behaviour assigned. Guard will use default Pursuing/Shooting states. " +
+                    "Assign StandardCombat component for cover-based combat (Combat Pack required).",
+                    MessageType.Info);
+            }
+
+            // Runtime suppression status
+            if (!Application.isPlaying) return;
+
+            var ai = (StealthHuntAI)target;
+
+            EditorGUILayout.Space(4);
+            EditorGUILayout.LabelField("Runtime Status", EditorStyles.boldLabel);
+
+            // Alert state
+            Color alertCol = ai.CurrentAlertState switch
+            {
+                AlertState.Hostile => new Color(1f, 0.2f, 0.2f),
+                AlertState.Suspicious => new Color(1f, 0.85f, 0.1f),
+                _ => new Color(0.4f, 0.9f, 0.4f)
+            };
+            GUI.color = alertCol;
+            string alertLabel = ai.CurrentAlertState + "  /  " + ai.CurrentSubState;
+            EditorGUILayout.LabelField(alertLabel, EditorStyles.boldLabel);
+            GUI.color = Color.white;
+
+            // Awareness bar
+            EditorGUI.BeginDisabledGroup(true);
+            var sensor = ai.GetComponent<AwarenessSensor>();
+            if (sensor != null)
+                EditorGUILayout.Slider(
+                    new GUIContent("Awareness"), sensor.AwarenessLevel, 0f, 1f);
+            EditorGUI.EndDisabledGroup();
+
+            // Suppression
+            var supp = ai.GetComponent<ISuppressionHandler>();
+            if (supp != null && supp.IsSuppressed)
+            {
+                GUI.color = new Color(1f, 0.6f, 0.1f);
+                EditorGUILayout.LabelField("SUPPRESSED", EditorStyles.boldLabel);
+                GUI.color = Color.white;
+            }
+        }
 
         private void DrawAdvanced()
         {

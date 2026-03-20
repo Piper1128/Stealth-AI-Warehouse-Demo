@@ -3,175 +3,176 @@ using UnityEngine;
 namespace StealthHuntAI.Demo
 {
     /// <summary>
-    /// Guard weapon system. Guard shoots at player when Hostile and in range.
-    /// Supports burst fire and single shot modes.
-    /// Attach to same GameObject as StealthHuntAI.
+    /// Guard weapon with penetration, burst fire, suppression and reload delay.
+    /// Implements IWeaponProvider for Core integration.
     /// </summary>
-    public class GuardWeapon : MonoBehaviour, IWeaponProvider
+    [RequireComponent(typeof(StealthHuntAI))]
+    public class GuardWeapon : MonoBehaviour, IWeaponProvider, IShootable
     {
-        [Header("Shooting")]
-        [Range(1f, 20f)] public float shootRange = 20f;
-        [Range(1, 100)] public int damage = 20;
+        [Header("Weapon")]
+        public float damage = 15f;
+        public float penetration = 0.4f;  // 0=none, 1=full
+        public float shootRange = 20f;
+        public float accuracy = 0.97f; // 0-1
+        public float fireRate = 0.3f;  // seconds between shots
+        public int burstCount = 1;     // 1 = single, 3 = burst
+        public float burstDelay = 0.1f;
+        public float reloadTime = 2.5f;
+        public int magazineSize = 20;
 
-        [Tooltip("Bullet spread angle in degrees.")]
-        [Range(0f, 15f)] public float spread = 4f;
+        [Header("Suppression")]
+        [Tooltip("Radius around bullet path that suppresses player.")]
+        public float suppressionRadius = 2.5f;
+        public float suppressionAmount = 0.15f;
 
-        [Tooltip("Seconds after losing sight before guard stops shooting.")]
-        [Range(0f, 3f)] public float shootMemory = 1.5f;
-
-        [Header("Fire Mode")]
-        public FireMode fireMode = FireMode.Burst;
-
-        [Tooltip("Seconds between single shots or between bursts.")]
-        [Range(0.1f, 5f)] public float fireInterval = 1.5f;
-
-        [Header("Burst Settings")]
-        [Tooltip("Number of shots per burst.")]
-        [Range(1, 8)] public int burstCount = 3;
-
-        [Tooltip("Seconds between shots within a burst.")]
-        [Range(0.05f, 0.5f)] public float burstRate = 0.12f;
-
-        [Header("Muzzle Flash")]
-        public ParticleSystem muzzleFlash;
-
-        // ---------- Enums -------------------------------------------------------
-
-        public enum FireMode { Single, Burst, Auto }
+        [Header("Refs")]
+        public Transform muzzle;
+        public LayerMask shootLayers = ~0; // all layers by default
 
         // IWeaponProvider
         public float ShootRange => shootRange;
-        public bool IsReady => true;
-
-        // ---------- Internal ----------------------------------------------------
+        public bool IsReady => !_reloading && _fireCooldown <= 0f;
 
         private StealthHuntAI _ai;
         private AwarenessSensor _sensor;
-        private float _fireTimer;
-        private float _lastSawPlayerTime;
-        private int _burstShotsLeft;
+        private float _fireCooldown;
+        private float _reloadTimer;
+        private bool _reloading;
+        private int _currentAmmo;
+        private int _burstFired;
         private float _burstTimer;
-        private bool _isBursting;
-
-        // ---------- Unity lifecycle ---------------------------------------------
+        private Vector3 _lastTargetPos;
 
         private void Awake()
         {
             _ai = GetComponent<StealthHuntAI>();
+            _sensor = GetComponent<AwarenessSensor>();
+            _currentAmmo = magazineSize;
         }
 
         private void Start()
         {
-            _sensor = GetComponent<AwarenessSensor>();
+            // Auto-register sensor -- needed if component added at runtime
+            if (_sensor == null) _sensor = GetComponent<AwarenessSensor>();
         }
 
         private void Update()
         {
-            if (_ai == null || _ai.CurrentAlertState != AlertState.Hostile) return;
+            if (_fireCooldown > 0f) _fireCooldown -= Time.deltaTime;
 
-            if (_sensor == null)
-                _sensor = GetComponent<AwarenessSensor>();
-
-            if (_sensor != null && _sensor.CanSeeTarget)
-                _lastSawPlayerTime = Time.time;
-
-            bool shouldShoot = Time.time - _lastSawPlayerTime < shootMemory;
-            if (!shouldShoot)
+            if (_reloading)
             {
-                _isBursting = false;
-                _burstShotsLeft = 0;
+                _reloadTimer += Time.deltaTime;
+                if (_reloadTimer >= reloadTime)
+                {
+                    _reloading = false;
+                    _currentAmmo = magazineSize;
+                }
                 return;
             }
 
-            switch (fireMode)
-            {
-                case FireMode.Single: TickSingle(); break;
-                case FireMode.Burst: TickBurst(); break;
-                case FireMode.Auto: TickAuto(); break;
-            }
-        }
-
-        // ---------- Fire modes --------------------------------------------------
-
-        private void TickSingle()
-        {
-            _fireTimer += Time.deltaTime;
-            if (_fireTimer < fireInterval) return;
-            _fireTimer = 0f;
-            Shoot();
-        }
-
-        private void TickBurst()
-        {
-            if (_isBursting)
+            // Burst continuation
+            if (_burstFired > 0 && _burstFired < burstCount)
             {
                 _burstTimer += Time.deltaTime;
-                if (_burstTimer >= burstRate)
+                if (_burstTimer >= burstDelay)
                 {
                     _burstTimer = 0f;
-                    Shoot();
-                    _burstShotsLeft--;
-                    if (_burstShotsLeft <= 0)
-                    {
-                        _isBursting = false;
-                        _fireTimer = 0f;
-                    }
+                    FireOnce();
+                    _burstFired++;
+                    if (_burstFired >= burstCount) _burstFired = 0;
                 }
             }
-            else
+        }
+
+        /// <summary>Called by StealthHuntAI shooting state to attempt firing.</summary>
+        public void TryShoot(Vector3 targetPos)
+        {
+            if (_reloading || _fireCooldown > 0f) return;
+            if (_currentAmmo <= 0) { StartReload(); return; }
+
+            _lastTargetPos = targetPos;
+            _burstFired = 1;
+            _burstTimer = 0f;
+            FireOnce();
+            _fireCooldown = fireRate * burstCount;
+
+            if (_currentAmmo <= 0) StartReload();
+        }
+
+        private void FireOnce()
+        {
+            if (_currentAmmo <= 0) return;
+            _currentAmmo--;
+
+            // Suppression penalty on accuracy
+            float guardHealth = GetComponent<GuardHealth>()?.SuppressLevel ?? 0f;
+            float effectiveAccuracy = accuracy * (1f - guardHealth * 0.4f);
+
+            Vector3 origin = muzzle != null ? muzzle.position : transform.position + Vector3.up * 1.5f;
+            // Use stored target pos from TryShoot -- supports estimated positions from Combat Pack
+            Vector3 targetPos = _lastTargetPos != Vector3.zero
+                ? _lastTargetPos + Vector3.up * 0.8f
+                : (_ai.GetTarget() != null
+                    ? _ai.GetTarget().Position + Vector3.up * 0.8f
+                    : transform.position + transform.forward * 10f);
+            Vector3 toTarget = targetPos - origin;
+
+            // Line of sight check -- don't shoot through walls
+            if (Physics.Raycast(origin, toTarget.normalized, toTarget.magnitude, shootLayers))
             {
-                _fireTimer += Time.deltaTime;
-                if (_fireTimer >= fireInterval)
-                {
-                    _isBursting = true;
-                    _burstShotsLeft = burstCount;
-                    _burstTimer = burstRate; // fire first shot immediately
-                }
+                // Something is blocking -- check if it's the player
+                if (!Physics.Raycast(origin, toTarget.normalized,
+                    out RaycastHit losHit, toTarget.magnitude, shootLayers)
+                    || losHit.collider.GetComponentInParent<PlayerHealth>() == null)
+                    return; // blocked by wall
             }
-        }
 
-        private void TickAuto()
-        {
-            _fireTimer += Time.deltaTime;
-            if (_fireTimer < burstRate) return;
-            _fireTimer = 0f;
-            Shoot();
-        }
+            // Apply spread
+            float spread = 1f - effectiveAccuracy;
+            Vector3 dir = toTarget.normalized
+                         + Random.insideUnitSphere * spread;
+            dir.Normalize();
 
-        // ---------- Shoot -------------------------------------------------------
-
-        private void Shoot()
-        {
-            SoundStimulus.Emit(transform.position, SoundType.Gunshot);
-
-            if (muzzleFlash != null)
-                muzzleFlash.Play();
-
-            Vector3 origin = transform.position + Vector3.up * 1.4f;
-
-            // Use actual target position if visible, otherwise last known
-            // This ensures raycast hits at correct height regardless of distance
-            Vector3 targetPos;
-            if (_sensor != null && _sensor.CanSeeTarget && _ai.GetTarget() != null)
-                targetPos = _ai.GetTarget().PerceptionOrigin;
-            else if (_ai.LastKnownPosition.HasValue)
-                targetPos = _ai.LastKnownPosition.Value + Vector3.up * 0.8f;
-            else
-                targetPos = origin + transform.forward * shootRange;
-
-            Vector3 dir = (targetPos - origin).normalized;
-            dir += Random.insideUnitSphere * (spread * Mathf.Deg2Rad);
-            dir = dir.normalized;
-
-            // Exclude own layer from raycast so guard doesn't shoot himself
-            int ignoreMask = ~(1 << gameObject.layer);
-
-            if (Physics.Raycast(origin, dir, out RaycastHit hit, shootRange, ignoreMask))
+            if (Physics.Raycast(origin, dir, out RaycastHit hit,
+                shootRange * 1.5f, shootLayers))
             {
                 var playerHealth = hit.collider.GetComponentInParent<PlayerHealth>();
                 if (playerHealth != null)
-                    playerHealth.TakeDamage(damage);
+                {
+                    bool headshot = false;
+                    try { headshot = hit.collider.CompareTag("Head"); } catch { }
+                    playerHealth.TakeDamage(new DamageInfo
+                    {
+                        damage = headshot ? damage * 2f : damage,
+                        penetration = penetration,
+                        direction = dir,
+                        hitPoint = hit.point,
+                        isHeadshot = headshot,
+                        sourceTag = "Guard"
+                    });
+                }
+
+                // Suppression splash near player
+                ApplyPlayerSuppression(hit.point, dir);
             }
+        }
+
+        private void ApplyPlayerSuppression(Vector3 point, Vector3 dir)
+        {
+            var target = _ai.GetTarget();
+            if (target == null) return;
+            float dist = Vector3.Distance(point, target.Position);
+            if (dist > suppressionRadius) return;
+
+            // Send sound stimulus as near-miss indicator
+            HuntDirector.BroadcastSound(point, 0.2f, 2f);
+        }
+
+        private void StartReload()
+        {
+            _reloading = true;
+            _reloadTimer = 0f;
         }
     }
 }

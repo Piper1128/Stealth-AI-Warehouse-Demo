@@ -35,10 +35,10 @@ namespace StealthHuntAI
         [Range(0f, 1f)] public float reactionTime = 0.15f;
 
         [Tooltip("How fast awareness rises when target is fully visible at close range.")]
-        [Range(0.1f, 10f)] public float sightRiseSpeed = 2.0f;
+        [Range(0.1f, 10f)] public float sightRiseSpeed = 1.5f;
 
         [Tooltip("How fast awareness decays when target leaves sight.")]
-        [Range(0.05f, 3f)] public float sightDecaySpeed = 0.3f;
+        [Range(0.05f, 3f)] public float sightDecaySpeed = 0.08f; // slow -- player stays suspicious longer
 
         [Header("Hearing")]
         [Range(1f, 40f)] public float hearingRange = 10f;
@@ -66,7 +66,7 @@ namespace StealthHuntAI
         [Range(1f, 30f)] public float lightSearchRadius = 12f;
 
         [Header("Awareness Dynamics")]
-        [Range(0.1f, 3f)] public float decaySpeed = 0.4f;
+        [Range(0.01f, 3f)] public float decaySpeed = 0.06f; // slow decay -- suspicious state lasts longer
         [Range(0f, 0.15f)] public float noiseAmount = 0.05f;
 
         // Compatibility properties -- personality and morale system use these
@@ -88,7 +88,10 @@ namespace StealthHuntAI
 
         // ---------- Runtime properties ----------------------------------------
 
-        public float AwarenessLevel { get; private set; }
+        public float AwarenessLevel { get; internal set; }
+
+        /// <summary>Set by StealthHuntAI to slow awareness decay in Hostile state.</summary>
+        public bool IsHostile { get => _isHostile; set => _isHostile = value; }
         public void AddAwareness(float amount)
         {
             AwarenessLevel = Mathf.Clamp01(AwarenessLevel + amount);
@@ -124,6 +127,7 @@ namespace StealthHuntAI
         private float _noiseOffset;
         private float _hearingAccumulator;
         private float _reactionTimer;
+        private bool _isHostile;
 
         // Stimulus history
         private StimulusRecord[] _stimulusHistory = new StimulusRecord[8];
@@ -430,10 +434,11 @@ namespace StealthHuntAI
             }
             else if (AwarenessLevel > 0f)
             {
+                // Decay much slower when Hostile -- guards keep searching longer
+                float effectiveDecay = _isHostile ? decaySpeed * 0.1f : decaySpeed;
                 AwarenessLevel = Mathf.Clamp01(Mathf.MoveTowards(
-                    AwarenessLevel, 0f, decaySpeed * Time.deltaTime));
+                    AwarenessLevel, 0f, effectiveDecay * Time.deltaTime));
 
-                // Decay sight accumulator too
                 SightAccumulator = Mathf.Max(0f,
                     SightAccumulator - sightDecaySpeed * Time.deltaTime);
             }

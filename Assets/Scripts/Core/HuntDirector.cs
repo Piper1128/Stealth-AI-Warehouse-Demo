@@ -160,7 +160,61 @@ namespace StealthHuntAI
         private static StealthTarget _target;
         private static List<StealthHuntAI> _units = new List<StealthHuntAI>();
         public static IReadOnlyList<StealthHuntAI> AllUnits => _units;
+
+        /// <summary>
+        /// Called when a unit becomes Hostile.
+        /// Propagates alert to all units within alertRadius -- forces them Hostile too.
+        /// Simulates radio communication and squad coordination.
+        /// </summary>
+        // Guard against recursive AlertSquad calls
+        private static bool _alertingSquad = false;
+
+        public static void AlertSquad(StealthHuntAI source, float alertRadius = 40f)
+        {
+            if (_alertingSquad) return;
+            _alertingSquad = true;
+
+            try
+            {
+                Vector3 sourcePos = source.transform.position;
+                var sourceBoard = SquadBlackboard.Get(source.squadID);
+
+                for (int i = 0; i < _units.Count; i++)
+                {
+                    var unit = _units[i];
+                    if (unit == null || unit == source) continue;
+                    if (unit.CurrentAlertState == AlertState.Hostile) continue;
+
+                    float dist = Vector3.Distance(sourcePos, unit.transform.position);
+                    if (dist > alertRadius) continue;
+
+                    // Share intel first
+                    if (sourceBoard != null)
+                    {
+                        var board = SquadBlackboard.Get(unit.squadID);
+                        board?.ShareIntel(sourceBoard.SharedLastKnown,
+                                          sourceBoard.SharedConfidence * 0.8f);
+                    }
+
+                    // Force hostile -- alertPropagationRadius = 0 on alerted units
+                    // so they don't re-trigger AlertSquad
+                    unit.ForceHostileSilent();
+                }
+            }
+            finally
+            {
+                _alertingSquad = false;
+            }
+        }
         private static List<SquadBlackboard> _squads = new List<SquadBlackboard>();
+
+        public static SquadBlackboard GetBlackboard(int squadID)
+        {
+            for (int i = 0; i < _squads.Count; i++)
+                if (_squads[i] != null && _squads[i].SquadID == squadID)
+                    return _squads[i];
+            return null;
+        }
 
         // ---------- Internal --------------------------------------------------
 

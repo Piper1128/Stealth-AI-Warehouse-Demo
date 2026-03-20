@@ -162,7 +162,8 @@ namespace StealthHuntAI
             }
 
             // Wait for strategy -- look around while waiting
-            if (_searchStrategy != null && !_searchStrategy.IsReady)
+            // Timeout after 2s to prevent guard being stuck looking around forever
+            if (_searchStrategy != null && !_searchStrategy.IsReady && _stateTimer < 2f)
             {
                 TickLookAround();
                 return;
@@ -241,6 +242,13 @@ namespace StealthHuntAI
 
         private void TickPursuing()
         {
+            // Suppressed guards stop advancing -- duck and wait
+            if (IsSuppressed)
+            {
+                StopMoving();
+                return;
+            }
+
             if (!_hasLastKnown)
             {
                 _searchCenter = transform.position;
@@ -313,7 +321,14 @@ namespace StealthHuntAI
                 && _target != null
                 && Vector3.Distance(transform.position, _target.Position) <= combatRange;
 
-            if (!stillInRange)
+            if (stillInRange)
+            {
+                // Fire -- call TryShoot on any IShootable component
+                var shootable = GetComponent<IShootable>();
+                if (shootable != null && _target != null)
+                    shootable.TryShoot(_target.Position);
+            }
+            else
             {
                 if (_agent != null) _agent.updateRotation = true;
                 TransitionSubState(SubState.Pursuing);
@@ -372,7 +387,8 @@ namespace StealthHuntAI
             }
 
             // Wait for strategy -- look around while waiting
-            if (_searchStrategy != null && !_searchStrategy.IsReady)
+            // Timeout after 2s to prevent guard being stuck looking around forever
+            if (_searchStrategy != null && !_searchStrategy.IsReady && _stateTimer < 2f)
             {
                 TickLookAround();
                 return;

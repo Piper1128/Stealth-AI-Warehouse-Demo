@@ -1,129 +1,138 @@
 using UnityEngine;
-using UnityEngine.UI;
+using UnityEngine.Events;
 
 namespace StealthHuntAI.Demo
 {
-    /// <summary>
-    /// Player health system with UI health bar.
-    /// Attach to PlayerCapsule.
-    /// </summary>
     public class PlayerHealth : MonoBehaviour
     {
         [Header("Health")]
-        [Range(1, 500)] public int maxHealth = 100;
+        public float maxHealth = 100f;
+        public float startHealth = 100f;
 
-        [Header("UI")]
-        [Tooltip("Slider used as health bar. Assign in inspector.")]
-        public Slider healthSlider;
+        [Header("Armor")]
+        public ArmorType armorType = ArmorType.None;
+        public float armorPoints = 100f;
 
-        [Tooltip("Image that flashes red when taking damage.")]
-        public Image damageFlash;
+        [Header("Regeneration")]
+        public bool enableRegen = true;
+        [Tooltip("Seconds after damage before regen starts.")]
+        public float regenDelay = 5f;
+        [Tooltip("HP per second.")]
+        public float regenRate = 8f;
+        [Tooltip("Max HP regen can reach. Set to maxHealth for full regen.")]
+        public float regenMax = 70f;
 
-        [Tooltip("How long the damage flash lasts.")]
-        [Range(0.05f, 0.5f)] public float flashDuration = 0.15f;
+        [Header("Death")]
+        public float respawnDelay = 3f;
 
-        [Header("Respawn")]
-        [Tooltip("Seconds before game over screen after death.")]
-        [Range(0.5f, 5f)] public float deathDelay = 2f;
+        [Header("Events")]
+        public UnityEvent<float> onDamaged;
+        public UnityEvent<DamageInfo> onHit;
+        public UnityEvent onDied;
+        public UnityEvent onRespawned;
 
-        // ---------- Runtime ---------------------------------------------------
-
-        public int CurrentHealth { get; private set; }
+        public float CurrentHealth { get; private set; }
+        public float CurrentArmor { get; private set; }
         public bool IsDead { get; private set; }
+        public float HealthPercent => CurrentHealth / maxHealth;
+        public float ArmorPercent => armorPoints > 0 ? CurrentArmor / armorPoints : 0f;
 
-        // ---------- Internal --------------------------------------------------
+        private float _regenTimer;
+        private float _respawnTimer;
 
-        private float _flashTimer;
-        private GameManager _gameManager;
-
-        // ---------- Unity lifecycle -------------------------------------------
+        private static float ArmorReduction(ArmorType t) => t switch
+        {
+            ArmorType.Light => 0.30f,
+            ArmorType.Medium => 0.50f,
+            ArmorType.Heavy => 0.70f,
+            _ => 0f
+        };
 
         private void Awake()
         {
-            CurrentHealth = maxHealth;
-            _gameManager = FindFirstObjectByType<GameManager>();
-
-            UpdateUI();
+            CurrentHealth = startHealth;
+            CurrentArmor = armorPoints;
         }
 
         private void Update()
         {
-            if (_flashTimer > 0f)
+            if (IsDead)
             {
-                _flashTimer -= Time.deltaTime;
+                _respawnTimer += Time.deltaTime;
+                if (_respawnTimer >= respawnDelay) Respawn();
+                return;
+            }
 
-                if (damageFlash != null)
-                {
-                    float alpha = _flashTimer / flashDuration;
-                    Color col = damageFlash.color;
-                    col.a = alpha * 0.5f;
-                    damageFlash.color = col;
-                }
-
-                if (_flashTimer <= 0f && damageFlash != null)
-                {
-                    Color col = damageFlash.color;
-                    col.a = 0f;
-                    damageFlash.color = col;
-                }
+            if (enableRegen && CurrentHealth < regenMax)
+            {
+                _regenTimer += Time.deltaTime;
+                if (_regenTimer >= regenDelay)
+                    CurrentHealth = Mathf.Min(regenMax,
+                        CurrentHealth + regenRate * Time.deltaTime);
             }
         }
 
-        // ---------- Public API ------------------------------------------------
-
-        public void TakeDamage(int amount)
+        public void TakeDamage(DamageInfo info)
         {
             if (IsDead) return;
-
-            CurrentHealth = Mathf.Max(0, CurrentHealth - amount);
-            UpdateUI();
-
-            // Flash damage indicator
-            _flashTimer = flashDuration;
-
-            if (CurrentHealth <= 0)
-                Die();
+            float dmg = CalcDamage(info);
+            if (dmg <= 0f) return;
+            CurrentHealth = Mathf.Max(0f, CurrentHealth - dmg);
+            _regenTimer = 0f;
+            onDamaged?.Invoke(CurrentHealth);
+            onHit?.Invoke(info);
+            if (CurrentHealth <= 0f) Die();
         }
 
-        public void Heal(int amount)
+        public void TakeDamage(float damage) =>
+            TakeDamage(new DamageInfo { damage = damage });
+
+        public void Heal(float amount)
         {
             if (IsDead) return;
             CurrentHealth = Mathf.Min(maxHealth, CurrentHealth + amount);
-            UpdateUI();
         }
 
-        // ---------- Internal --------------------------------------------------
-
-        private void UpdateUI()
+        private float CalcDamage(DamageInfo info)
         {
-            if (healthSlider != null)
-                healthSlider.value = (float)CurrentHealth / maxHealth;
+            if (info.isSuppression) return 0f;
+            float dmg = info.damage;
+            float red = ArmorReduction(armorType);
+            if (red > 0f && CurrentArmor > 0f)
+            {
+                float effRed = red * (1f - info.penetration);
+                dmg *= (1f - effRed);
+                CurrentArmor = Mathf.Max(0f,
+                    CurrentArmor - info.damage * (1f - info.penetration) * 0.3f);
+                if (CurrentArmor <= 0f) armorType = ArmorType.None;
+            }
+            return dmg;
         }
 
         private void Die()
         {
-            IsDead = true;
-
-            // Disable FirstPersonController -- not CharacterController directly
-            // (disabling CC while FPC is active causes Move() on inactive controller error)
-            var fpc = GetComponentInParent<MonoBehaviour>();
-            foreach (var mb in GetComponentsInParent<MonoBehaviour>())
-            {
-                if (mb.GetType().Name == "FirstPersonController")
-                {
-                    mb.enabled = false;
-                    break;
-                }
-            }
-
-            if (_gameManager != null)
-                Invoke(nameof(NotifyDeath), deathDelay);
+            IsDead = true; _respawnTimer = 0f;
+            // Disable player controls
+            var controller = GetComponent<PlayerController>();
+            if (controller != null) controller.enabled = false;
+            var combat = GetComponent<PlayerCombat>();
+            if (combat != null) combat.enabled = false;
+            onDied?.Invoke();
         }
 
-        private void NotifyDeath()
+        private void Respawn()
         {
-            if (_gameManager != null)
-                _gameManager.OnPlayerDied();
+            // Re-enable player controls
+            var controller = GetComponent<PlayerController>();
+            if (controller != null) controller.enabled = true;
+            var combat = GetComponent<PlayerCombat>();
+            if (combat != null) combat.enabled = true;
+
+            IsDead = false;
+            CurrentHealth = startHealth;
+            CurrentArmor = armorPoints;
+            _regenTimer = _respawnTimer = 0f;
+            onRespawned?.Invoke();
         }
     }
 }

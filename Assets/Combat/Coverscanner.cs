@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Collections.Generic;
+using Unity.Collections;
 using UnityEngine;
 using UnityEngine.AI;
 using static StealthHuntAI.Combat.CoverPoint;
@@ -78,117 +79,133 @@ namespace StealthHuntAI.Combat
             }
         }
 
+        // 8 compass directions precomputed
+        private static readonly Vector3[] Dirs8 = new Vector3[8];
+
+        private void Awake()
+        {
+            for (int i = 0; i < 8; i++)
+            {
+                float a = i * 45f * Mathf.Deg2Rad;
+                Dirs8[i] = new Vector3(Mathf.Sin(a), 0f, Mathf.Cos(a));
+            }
+        }
+
         private IEnumerator Scan()
         {
             _scanning = true;
 
-            int generated = 0;
+            Vector3 origin = transform.position;
+            int batchSize = 20; // candidates per batch
             int tested = 0;
 
-            // Use scene center as scan origin
-            Vector3 origin = transform.position;
+            // Pre-allocate candidates for this pass
+            var candidates = new List<Vector3>(batchSize);
 
             while (tested < samplesPerPass)
             {
-                // Random point within scan radius
-                Vector2 rand = Random.insideUnitCircle * scanRadius;
-                Vector3 sample = origin + new Vector3(rand.x, 0f, rand.y);
+                candidates.Clear();
 
-                // Sample onto NavMesh
-                if (!NavMesh.SamplePosition(sample, out NavMeshHit hit,
-                    navMeshSampleRadius, NavMesh.AllAreas))
+                // Collect a batch of valid NavMesh candidates
+                int batchTarget = Mathf.Min(batchSize, samplesPerPass - tested);
+                int attempts = 0;
+
+                while (candidates.Count < batchTarget && attempts < batchTarget * 4)
                 {
-                    tested++;
-                    continue;
+                    attempts++;
+                    Vector2 rand = Random.insideUnitCircle * scanRadius;
+                    Vector3 sample = origin + new Vector3(rand.x, 0f, rand.y);
+
+                    if (!NavMesh.SamplePosition(sample, out NavMeshHit hit,
+                        navMeshSampleRadius, NavMesh.AllAreas)) continue;
+
+                    if (TooClose(hit.position)) continue;
+
+                    candidates.Add(hit.position);
                 }
 
-                Vector3 navPos = hit.position;
+                tested += batchTarget;
 
-                // Check minimum spacing from existing points
-                if (TooClose(navPos))
+                if (candidates.Count == 0) { yield return null; continue; }
+
+                // Build batched raycasts for all candidates
+                // Per candidate: 8 low rays + 8 high rays + 8 peek rays = 24 rays
+                int rayCount = candidates.Count * 24;
+                var commands = new NativeArray<RaycastCommand>(rayCount, Allocator.TempJob);
+                var results = new NativeArray<RaycastHit>(rayCount, Allocator.TempJob);
+
+                QueryParameters qp = QueryParameters.Default;
+                qp.layerMask = coverLayers;
+
+                for (int c = 0; c < candidates.Count; c++)
                 {
-                    tested++;
-                    continue;
+                    Vector3 pos = candidates[c];
+                    int base0 = c * 24;
+
+                    for (int d = 0; d < 8; d++)
+                    {
+                        // Low rays (cover height 0.1m)
+                        commands[base0 + d] = new RaycastCommand(
+                            pos + Vector3.up * 0.1f, Dirs8[d], qp, 1.2f);
+                        // High rays (stand height 1.6m)
+                        commands[base0 + 8 + d] = new RaycastCommand(
+                            pos + Vector3.up * 1.6f, Dirs8[d], qp, 1.2f);
+                        // Peek rays (1.0m height, 10m distance)
+                        commands[base0 + 16 + d] = new RaycastCommand(
+                            pos + Vector3.up * 1.0f, Dirs8[d], qp, 10f);
+                    }
                 }
 
-                // Check if there is cover geometry nearby
-                CoverType? coverType = DetectCover(navPos);
-                if (coverType == null)
-                {
-                    tested++;
-                    continue;
-                }
+                // Schedule batch -- all raycasts run in parallel on job threads
+                var handle = RaycastCommand.ScheduleBatch(commands, results,
+                    minCommandsPerJob: 4);
 
-                // Generate CoverPoint
-                Vector3 peekDir = DetectPeekDirection(navPos);
-                CreateCoverPoint(navPos, coverType.Value, peekDir);
-                generated++;
-
-                tested++;
-
-                // Yield every 20 tests to avoid frame spikes
-                if (tested % 20 == 0)
+                // Yield until job completes -- no frame spike
+                while (!handle.IsCompleted)
                     yield return null;
+                handle.Complete();
+
+                // Process results
+                for (int c = 0; c < candidates.Count; c++)
+                {
+                    Vector3 pos = candidates[c];
+                    int base0 = c * 24;
+
+                    // Analyse low and high ray results
+                    int wallCount = 0;
+                    int cornerCount = 0;
+                    float bestDist = -1f;
+                    int bestDir = 0;
+
+                    for (int d = 0; d < 8; d++)
+                    {
+                        bool lowHit = results[base0 + d].collider != null;
+                        bool highHit = results[base0 + 8 + d].collider != null;
+                        float peekD = results[base0 + 16 + d].collider != null
+                            ? results[base0 + 16 + d].distance : 10f;
+
+                        if (lowHit) wallCount++;
+                        if (highHit) cornerCount++;
+                        if (peekD > bestDist) { bestDist = peekD; bestDir = d; }
+                    }
+
+                    // Determine cover type
+                    if (wallCount == 0 || wallCount >= 6) continue;
+
+                    CoverType ct = cornerCount >= 2 ? CoverType.High
+                                 : wallCount == 2 ? CoverType.Corner
+                                 : CoverType.Low;
+
+                    CreateCoverPoint(pos, ct, Dirs8[bestDir]);
+                }
+
+                commands.Dispose();
+                results.Dispose();
+
+                yield return null; // one frame between batches
             }
 
             _scanning = false;
-        }
-
-        // ---------- Detection helpers ----------------------------------------
-
-        private CoverType? DetectCover(Vector3 pos)
-        {
-            // Cast horizontally in 8 directions looking for obstacles
-            int wallCount = 0;
-            int cornerCount = 0;
-
-            for (int i = 0; i < 8; i++)
-            {
-                float angle = i * 45f * Mathf.Deg2Rad;
-                Vector3 dir = new Vector3(Mathf.Sin(angle), 0f, Mathf.Cos(angle));
-
-                // Check for wall at cover height
-                if (Physics.Raycast(pos + Vector3.up * 0.1f, dir, 1.2f, coverLayers))
-                    wallCount++;
-
-                // Check for wall at stand height
-                if (Physics.Raycast(pos + Vector3.up * 1.6f, dir, 1.2f, coverLayers))
-                    cornerCount++;
-            }
-
-            if (wallCount == 0) return null;
-
-            // Is there an opening to peek through? (not all directions blocked)
-            if (wallCount >= 6) return null; // completely surrounded
-
-            // High cover: wall at head height
-            if (cornerCount >= 2) return CoverType.High;
-
-            // Corner: walls from two perpendicular directions
-            if (wallCount == 2) return CoverType.Corner;
-
-            return CoverType.Low;
-        }
-
-        private Vector3 DetectPeekDirection(Vector3 pos)
-        {
-            // Find the direction with least obstruction -- that's where to peek
-            float bestDist = -1f;
-            Vector3 bestDir = Vector3.forward;
-
-            for (int i = 0; i < 8; i++)
-            {
-                float angle = i * 45f * Mathf.Deg2Rad;
-                Vector3 dir = new Vector3(Mathf.Sin(angle), 0f, Mathf.Cos(angle));
-
-                float dist = Physics.Raycast(
-                    pos + Vector3.up * 1.0f, dir, out RaycastHit hit, 10f, coverLayers)
-                    ? hit.distance : 10f;
-
-                if (dist > bestDist) { bestDist = dist; bestDir = dir; }
-            }
-
-            return bestDir;
         }
 
         private bool TooClose(Vector3 pos)

@@ -16,6 +16,8 @@ namespace StealthHuntAI
             switch (behaviourMode)
             {
                 case BehaviourMode.Patrol:
+                    if (patrolPoints == null || patrolPoints.Length == 0)
+                        GenerateAutoPatrol();
                     if (patrolPoints != null && patrolPoints.Length > 0)
                         TransitionSubState(SubState.Patrolling);
                     break;
@@ -31,6 +33,34 @@ namespace StealthHuntAI
         }
 
         // ---------- Patrol ----------------------------------------------------
+
+        /// <summary>
+        /// Auto-generates patrol points on NavMesh around spawn position.
+        /// Called when no patrol points are manually assigned.
+        /// </summary>
+        private void GenerateAutoPatrol()
+        {
+            int count = 4;
+            float radius = autoPatrolRadius > 0f ? autoPatrolRadius : 8f;
+            var pts = new System.Collections.Generic.List<Transform>();
+
+            for (int i = 0; i < count; i++)
+            {
+                float angle = i * (360f / count) * Mathf.Deg2Rad;
+                Vector3 dir = new Vector3(Mathf.Sin(angle), 0f, Mathf.Cos(angle));
+                Vector3 pos = _spawnPosition + dir * radius;
+
+                if (NavMeshHelper.Sample(pos, radius * 0.5f, out Vector3 snapped))
+                {
+                    var go = new GameObject("AutoPatrol_" + i);
+                    go.transform.position = snapped;
+                    pts.Add(go.transform);
+                }
+            }
+
+            if (pts.Count >= 2)
+                patrolPoints = pts.ToArray();
+        }
 
         private void TickPatrolling()
         {

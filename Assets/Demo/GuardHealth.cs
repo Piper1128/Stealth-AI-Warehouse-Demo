@@ -1,125 +1,148 @@
 using UnityEngine;
-using UnityEngine.AI;
+using UnityEngine.Events;
 
 namespace StealthHuntAI.Demo
 {
-    /// <summary>
-    /// Guard health and death system.
-    /// Attach to the same GameObject as StealthHuntAI.
-    /// </summary>
-    public class GuardHealth : MonoBehaviour
+    [RequireComponent(typeof(StealthHuntAI))]
+    public class GuardHealth : MonoBehaviour, ISuppressionHandler
     {
         [Header("Health")]
-        [Range(1, 500)] public int maxHealth = 100;
+        public float maxHealth = 100f;
+        public float startHealth = 100f;
 
-        [Header("Silent Takedown")]
-        [Tooltip("Max distance for silent takedown.")]
-        [Range(0.5f, 3f)] public float takedownRange = 1.8f;
+        [Header("Armor")]
+        public ArmorType armorType = ArmorType.None;
+        public float armorPoints = 100f;
 
-        [Tooltip("Guard must be facing away from player within this angle.")]
-        [Range(90f, 180f)] public float takedownAngle = 130f;
+        [Header("Suppression")]
+        [Tooltip("Level at which guard is considered suppressed (0-1).")]
+        public float suppressThreshold = 0.4f;
+        [Tooltip("How fast suppression decays per second.")]
+        public float suppressDecay = 0.8f;
+        [Tooltip("Accuracy penalty at full suppression (0-1).")]
+        public float suppressAccuracyPenalty = 0.6f;
+        [Tooltip("Speed penalty at full suppression (0-1).")]
+        public float suppressSpeedPenalty = 0.4f;
+        [Tooltip("Awareness rise speed multiplier when suppressed.")]
+        public float suppressAwarenessPenalty = 0.5f;
 
-        // ---------- Runtime ---------------------------------------------------
+        [Header("Events")]
+        public UnityEvent<DamageInfo> onHit;
+        public UnityEvent onDied;
 
-        public int CurrentHealth { get; private set; }
+        public float CurrentHealth { get; private set; }
+        public float CurrentArmor { get; private set; }
+        public float SuppressLevel { get; private set; }
         public bool IsDead { get; private set; }
-
-        // ---------- Internal --------------------------------------------------
+        public bool IsSuppressed => SuppressLevel >= suppressThreshold;
+        public float HealthPercent => CurrentHealth / maxHealth;
 
         private StealthHuntAI _ai;
-        private AwarenessSensor _sensor;
-        private Animator _animator; // fallback only
-        private NavMeshAgent _agent;
 
-
-        // ---------- Unity lifecycle -------------------------------------------
+        private static float ArmorReduction(ArmorType t) => t switch
+        {
+            ArmorType.Light => 0.30f,
+            ArmorType.Medium => 0.50f,
+            ArmorType.Heavy => 0.70f,
+            _ => 0f
+        };
 
         private void Awake()
         {
             _ai = GetComponent<StealthHuntAI>();
-            _sensor = GetComponent<AwarenessSensor>();
-            _animator = GetComponentInChildren<Animator>();
-            _agent = GetComponent<NavMeshAgent>();
-
-            CurrentHealth = maxHealth;
+            CurrentHealth = startHealth;
+            CurrentArmor = armorPoints;
         }
 
-        // ---------- Public API ------------------------------------------------
-
-        /// <summary>Deal damage from gunfire. Triggers sound stimulus.</summary>
-        public void TakeDamage(int amount)
+        private void Update()
         {
-            if (IsDead) return;
-
-            CurrentHealth -= amount;
-
-            // Play hit reaction if assigned
-            _ai?.PlayAnimState("HitReaction", 0.05f);
-
-            // Gunshot makes guard instantly alert
-            if (_ai != null)
-                _ai.ForceAlert(transform.position + transform.forward * 2f, 1f);
-
-            // Emit gunshot sound -- alerts nearby units
-            SoundStimulus.Emit(transform.position, SoundType.Gunshot);
-
-            if (CurrentHealth <= 0)
-                Die(silent: false);
-        }
-
-        /// <summary>Silent takedown -- no sound, no alert.</summary>
-        public void SilentKill()
-        {
-            if (IsDead) return;
-            CurrentHealth = 0;
-            Die(silent: true);
-        }
-
-        /// <summary>
-        /// Check if player can perform a silent takedown on this guard.
-        /// </summary>
-        public bool CanTakedown(Transform player)
-        {
-            if (IsDead) return false;
-            if (_ai != null && _ai.CurrentAlertState == AlertState.Hostile) return false;
-
-            float dist = Vector3.Distance(player.position, transform.position);
-            if (dist > takedownRange) return false;
-
-            // Guard must have back toward player
-            Vector3 toPlayer = (player.position - transform.position).normalized;
-            float dot = Vector3.Dot(transform.forward, toPlayer);
-            float angle = Mathf.Acos(Mathf.Clamp(dot, -1f, 1f)) * Mathf.Rad2Deg;
-
-            return angle >= takedownAngle * 0.5f;
-        }
-
-        // ---------- Internal --------------------------------------------------
-
-        private void Die(bool silent)
-        {
-            if (IsDead) return;
-            IsDead = true;
-
-            // Disable AI
-            if (_ai != null) _ai.enabled = false;
-            if (_sensor != null) _sensor.enabled = false;
-
-            // Stop movement
-            if (_agent != null)
+            if (SuppressLevel > 0f)
             {
-                _agent.ResetPath();
-                _agent.enabled = false;
+                SuppressLevel = Mathf.Max(0f,
+                    SuppressLevel - suppressDecay * Time.deltaTime);
             }
 
-            // Trigger death animation via StealthHuntAI CrossFade system
-            if (_ai != null)
-                _ai.PlayDeathAnim();
-            else if (_animator != null)
-                _animator.CrossFade("Death", 0.1f);
+            // Apply suppression effects
+            var sensor = GetComponent<AwarenessSensor>();
+            if (IsSuppressed)
+            {
+                // Reduce awareness rise speed
+                if (sensor != null)
+                    sensor.sightAccumulatorMultiplier = suppressAwarenessPenalty;
 
-            // Destroy after animation plays
-            Destroy(gameObject, 4f);
+                // Reduce movement speed
+                var ai = GetComponent<StealthHuntAI>();
+                if (ai != null)
+                {
+                    ai.patrolSpeedMultiplier = ai.patrolSpeedMultiplier
+                        * (1f - SuppressLevel * suppressSpeedPenalty);
+                    ai.chaseSpeedMultiplier = ai.chaseSpeedMultiplier
+                        * (1f - SuppressLevel * suppressSpeedPenalty);
+                }
+            }
+            else
+            {
+                // Restore normal values
+                if (sensor != null)
+                    sensor.sightAccumulatorMultiplier = 1f;
+            }
+        }
+
+        public void TakeDamage(DamageInfo info)
+        {
+            if (IsDead) return;
+
+            if (info.isSuppression)
+            {
+                AddSuppression(info.suppressAmount);
+                return;
+            }
+
+            float dmg = CalcDamage(info);
+            CurrentHealth = Mathf.Max(0f, CurrentHealth - dmg);
+
+            // Hit reaction anim
+            _ai?.PlayAnimState("HitReaction");
+
+            // Become hostile immediately when hit
+            if (_ai != null && !IsDead)
+            {
+                _ai.ForceHostile();
+                AddSuppression(0.2f);
+            }
+
+            onHit?.Invoke(info);
+
+            if (CurrentHealth <= 0f) Die();
+        }
+
+        public void AddSuppression(float amount)
+        {
+            SuppressLevel = Mathf.Clamp01(SuppressLevel + amount);
+        }
+
+        private float CalcDamage(DamageInfo info)
+        {
+            float dmg = info.damage;
+            float red = ArmorReduction(armorType);
+            if (red > 0f && CurrentArmor > 0f)
+            {
+                float effRed = red * (1f - info.penetration);
+                dmg *= (1f - effRed);
+                CurrentArmor = Mathf.Max(0f,
+                    CurrentArmor - info.damage * (1f - info.penetration) * 0.3f);
+                if (CurrentArmor <= 0f) armorType = ArmorType.None;
+            }
+            return dmg;
+        }
+
+        private void Die()
+        {
+            IsDead = true;
+            // Remove from HuntDirector unit list so dead guards dont count
+            HuntDirector.UnregisterUnit(_ai);
+            _ai?.Die();
+            onDied?.Invoke();
         }
     }
 }

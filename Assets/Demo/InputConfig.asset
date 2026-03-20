@@ -1,0 +1,29 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9d095088e5e961f49a50e7ab00a8a045, type: 3}
+  m_Name: InputConfig
+  m_EditorClassIdentifier: StealthHuntAI.Demo::StealthHuntAI.Demo.InputConfig
+  forward: 37
+  back: 33
+  left: 15
+  right: 18
+  sprint: 51
+  crouch: 17
+  prone: 40
+  leanLeft: 31
+  leanRight: 19
+  jump: 1
+  reload: 32
+  melee: 20
+  fireMode: 36
+  shootButton: 0
+  adsButton: 1

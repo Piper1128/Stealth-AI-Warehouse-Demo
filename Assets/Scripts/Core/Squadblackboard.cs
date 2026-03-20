@@ -73,6 +73,21 @@ namespace StealthHuntAI
         /// Report a sighted or heard position from one unit to the whole squad.
         /// Other units receive the intel with confidence scaled by distance.
         /// </summary>
+        /// <summary>Get blackboard by squad ID.</summary>
+        public static SquadBlackboard Get(int squadID)
+            => HuntDirector.GetBlackboard(squadID);
+
+        /// <summary>Share intel directly -- used by AlertSquad propagation.</summary>
+        public void ShareIntel(Vector3 position, float confidence)
+        {
+            if (confidence > SharedConfidence)
+            {
+                SharedLastKnown = position;
+                SharedConfidence = confidence;
+                LastIntelTime = Time.time;
+            }
+        }
+
         public void ReportIntel(StealthHuntAI reporter, Vector3 position, float confidence)
         {
             if (confidence <= SharedConfidence * 0.5f) return;

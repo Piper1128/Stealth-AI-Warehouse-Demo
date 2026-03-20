@@ -145,8 +145,10 @@ namespace StealthHuntAI
         [Range(0.05f, 3f)] public float sightDecaySpeed = 0.3f;
 
         [Header("Awareness Thresholds")]
-        [Range(0f, 1f)] public float suspicionThreshold = 0.30f;
-        [Range(0f, 1f)] public float hostileThreshold = 0.70f;
+        [Range(0f, 1f)] public float suspicionThreshold = 0.25f;
+        [Range(0f, 1f)] public float hostileThreshold = 0.80f;
+        [Tooltip("Minimum seconds guard stays suspicious before returning to passive.")]
+        [Range(0f, 30f)] public float suspiciousDwellTime = 12f;
 
         [Header("Behaviour")]
         public Personality personality = Personality.Balanced;
@@ -159,8 +161,11 @@ namespace StealthHuntAI
         [Tooltip("Speed multiplier when actively pursuing or searching hostile.")]
         [Range(0.5f, 2f)] public float chaseSpeedMultiplier = 1.0f;
 
-        [Tooltip("Patrol waypoints. Used when BehaviourMode is Patrol.")]
+        [Tooltip("Patrol waypoints. Leave empty to auto-generate patrol around spawn position.")]
         public Transform[] patrolPoints;
+
+        [Tooltip("Radius for auto-generated patrol when no patrol points are assigned.")]
+        [Range(2f, 30f)] public float autoPatrolRadius = 8f;
 
         [Tooltip("Loop: A->B->C->A  PingPong: A->B->C->B->A")]
         public PatrolPattern patrolPattern = PatrolPattern.Loop;
@@ -242,6 +247,10 @@ namespace StealthHuntAI
 
         [Tooltip("Map state names to animation clips. Add/remove as needed.")]
         public List<AnimSlot> animSlots = new List<AnimSlot>();
+
+        [Header("Squad Alert")]
+        [Tooltip("When this unit becomes Hostile, all units within this radius are alerted too.")]
+        [Range(0f, 80f)] public float alertPropagationRadius = 30f;
 
         [Header("Combat (optional -- requires Combat Pack)")]
         [Tooltip("Assign a MonoBehaviour implementing ICombatBehaviour to override " +
@@ -328,6 +337,10 @@ namespace StealthHuntAI
         private float _aimWeight;
         private ICombatBehaviour _combat;
         private bool _wasInCombat;
+        private bool _suppressAlertPropagation;
+        private float _suspiciousDwellTimer;
+        private float _lastSeenTimer;      // time since last saw player
+        private const float CombatMemoryTime = 8f; // stay hostile this long after losing sight
         private float _lookAroundTimer;
         private Quaternion _lookAroundTarget;
         private bool _hasLookTarget;
@@ -449,6 +462,14 @@ namespace StealthHuntAI
                 // CrossFade system -- no parameter hashing needed
             }
 
+            // Init ragdoll -- all rigidbodies start kinematic so animation controls movement
+            var ragdollRbs = GetComponentsInChildren<Rigidbody>();
+            foreach (var rb in ragdollRbs)
+            {
+                rb.isKinematic = true;
+                rb.useGravity = false;
+            }
+
             _sensor = GetComponent<AwarenessSensor>();
             if (_sensor == null)
                 _sensor = gameObject.AddComponent<AwarenessSensor>();
@@ -525,16 +546,16 @@ namespace StealthHuntAI
             switch (personality)
             {
                 case Personality.Cautious:
-                    suspicionThreshold = 0.20f;
-                    hostileThreshold = 0.80f;
+                    suspicionThreshold = 0.15f;
+                    hostileThreshold = 0.75f;
                     _sensor.riseSpeed = 0.8f;
                     _sensor.decaySpeed = 0.12f;
                     searchDuration = 15f;
                     break;
 
                 case Personality.Balanced:
-                    suspicionThreshold = 0.30f;
-                    hostileThreshold = 0.70f;
+                    suspicionThreshold = 0.25f;
+                    hostileThreshold = 0.80f;
                     _sensor.riseSpeed = 1.2f;
                     _sensor.decaySpeed = 0.10f;
                     searchDuration = 10f;
@@ -542,7 +563,7 @@ namespace StealthHuntAI
 
                 case Personality.Aggressive:
                     suspicionThreshold = 0.20f;
-                    hostileThreshold = 0.50f;
+                    hostileThreshold = 0.60f;
                     _sensor.riseSpeed = 2.0f;
                     _sensor.decaySpeed = 0.08f;
                     searchDuration = 6f;
@@ -650,19 +671,53 @@ namespace StealthHuntAI
 
                 case AlertState.Suspicious:
                     if (awareness >= hostThresh)
+                    {
+                        _suspiciousDwellTimer = 0f;
                         TransitionTo(AlertState.Hostile, SubState.Pursuing);
+                    }
                     else if (awareness <= 0.05f)
-                        TransitionTo(AlertState.Passive, SubState.Returning);
+                    {
+                        // Must stay suspicious for minimum dwell time before returning to passive
+                        _suspiciousDwellTimer += Time.deltaTime;
+                        if (_suspiciousDwellTimer >= suspiciousDwellTime)
+                        {
+                            _suspiciousDwellTimer = 0f;
+                            TransitionTo(AlertState.Passive, SubState.Returning);
+                        }
+                    }
+                    else
+                    {
+                        _suspiciousDwellTimer = 0f;
+                    }
                     break;
 
                 case AlertState.Hostile:
-                    if (awareness <= suspThresh)
+                    // Track how long since we last saw player
+                    if (_sensor != null && _sensor.CanSeeTarget)
+                        _lastSeenTimer = 0f;
+                    else
+                        _lastSeenTimer += Time.deltaTime;
+
+                    // Only go to LostTarget after combat memory expires
+                    // Guards remember where player was for CombatMemoryTime seconds
+                    if (_lastSeenTimer >= CombatMemoryTime && awareness <= suspThresh)
                     {
                         if (CurrentSubState != SubState.LostTarget)
                             TransitionTo(AlertState.Hostile, SubState.LostTarget);
                     }
+                    // Keep pursuing last known position even without sight
+                    else if (!_sensor.CanSeeTarget
+                          && CurrentSubState == SubState.Pursuing
+                          && _hasLastKnown)
+                    {
+                        // Continue pursuing last known -- dont switch to LostTarget yet
+                    }
                     break;
             }
+
+            // Re-cache combat if not set yet (handles runtime assignment)
+            if (_combat == null && combatBehaviourOverride != null)
+                _combat = combatBehaviourOverride as ICombatBehaviour;
 
             // Combat Pack handoff -- runs before SubState switch
             if (CurrentAlertState == AlertState.Hostile && _combat != null)
@@ -675,9 +730,10 @@ namespace StealthHuntAI
                 if (_combat.WantsControl)
                 {
                     _combat.Tick(this);
-                    return; // skip Core SubState ticks
+                    return;
                 }
             }
+
 
             switch (CurrentSubState)
             {
@@ -709,8 +765,18 @@ namespace StealthHuntAI
                 _combat.OnExitCombat(this);
             }
 
+            // Alert squad when becoming Hostile -- propagate to nearby units
+            if (newAlert == AlertState.Hostile && prev != AlertState.Hostile
+             && !_suppressAlertPropagation)
+            {
+                _lastSeenTimer = 0f;
+                HuntDirector.AlertSquad(this, alertPropagationRadius);
+            }
+
             CurrentAlertState = newAlert;
             CurrentSubState = newSub;
+            if (_sensor != null)
+                _sensor.IsHostile = (newAlert == AlertState.Hostile);
             _stateTimer = 0f;
             _searchTimer = 0f;
             _hasLookTarget = false;
@@ -805,16 +871,25 @@ namespace StealthHuntAI
             // Skip when Combat Pack owns animation
             if (_combat != null && _combat.WantsControl) return;
 
-            // Use actual agent velocity magnitude -- not configured speed
-            // This correctly detects when unit is standing still vs moving
             float velocity = _movement != null ? _movement.ActualSpeed : 0f;
             bool moving = velocity > 0.1f;
 
             string target = GetTargetAnimState(moving);
-            if (target == _currentAnimState || string.IsNullOrEmpty(target)) return;
+            if (string.IsNullOrEmpty(target)) return;
 
-            _currentAnimState = target;
-            try { animator.CrossFade(target, animTransitionDuration); } catch { }
+            // Transition to new state
+            if (target != _currentAnimState)
+            {
+                _currentAnimState = target;
+                try { animator.CrossFade(target, animTransitionDuration); } catch { }
+                return;
+            }
+
+            // Re-trigger if animation has finished playing (not looping clips)
+            // Normalised time >= 0.95 means clip is near end
+            var info = animator.GetCurrentAnimatorStateInfo(0);
+            if (info.normalizedTime >= 0.95f && !info.loop)
+                try { animator.CrossFade(target, 0f); } catch { }
         }
 
         private string GetTargetAnimState(bool moving)
@@ -927,7 +1002,49 @@ namespace StealthHuntAI
             animator.SetLookAtPosition(aimPos);
         }
 
-        /// <summary>Called by GuardHealth when unit dies.</summary>
+        /// <summary>Kill this unit externally. Called by health components.</summary>
+        public void Die()
+        {
+            if (!enabled && !(_agent != null && _agent.enabled)) return; // already dead
+
+            // Stop and fully remove from NavMesh
+            if (_agent != null)
+            {
+                _agent.isStopped = true;
+                _agent.velocity = Vector3.zero;
+                _agent.ResetPath();
+                _agent.enabled = false;
+            }
+            // Disable CharacterController if present -- stops any position updates
+            var cc = GetComponent<UnityEngine.CharacterController>();
+            if (cc != null) cc.enabled = false;
+
+            // Ragdoll -- disable animator and enable physics on all rigidbodies
+            bool hasRagdoll = false;
+            var rbs = GetComponentsInChildren<Rigidbody>();
+            foreach (var rb in rbs)
+            {
+                rb.isKinematic = false;
+                rb.useGravity = true;
+                hasRagdoll = true;
+            }
+
+            if (hasRagdoll)
+            {
+                // Disable animator so ragdoll physics takes over
+                if (_hasAnimator) animator.enabled = false;
+            }
+            else
+            {
+                // No ragdoll -- play death animation and disable colliders
+                PlayDeathAnim();
+                var cols = GetComponentsInChildren<Collider>();
+                foreach (var col in cols) col.enabled = false;
+            }
+
+            enabled = false;
+        }
+
         public void PlayDeathAnim()
         {
             if (!_hasAnimator) return;
@@ -968,26 +1085,68 @@ namespace StealthHuntAI
         /// <summary>Returns the current StealthTarget (player). Null if not found.</summary>
         public StealthTarget GetTarget() => _target;
 
+        /// <summary>Force this unit into Hostile state -- also alerts nearby squad.</summary>
+        public void ForceHostile()
+        {
+            if (_sensor != null)
+                _sensor.AwarenessLevel = hostileThreshold + 0.1f;
+            if (CurrentAlertState != AlertState.Hostile)
+                TransitionTo(AlertState.Hostile, SubState.Pursuing);
+        }
+
+        /// <summary>Force Hostile without triggering AlertSquad -- used by AlertSquad itself.</summary>
+        public void ForceHostileSilent()
+        {
+            if (_sensor != null)
+                _sensor.AwarenessLevel = hostileThreshold + 0.1f;
+            if (CurrentAlertState != AlertState.Hostile)
+            {
+                // Set flag to suppress AlertSquad call in TransitionTo
+                _suppressAlertPropagation = true;
+                TransitionTo(AlertState.Hostile, SubState.Pursuing);
+                _suppressAlertPropagation = false;
+            }
+        }
+
+        /// <summary>Add suppression to this unit via ISuppressionHandler component.</summary>
+        public void AddSuppression(float amount)
+        {
+            GetComponent<ISuppressionHandler>()?.AddSuppression(amount);
+        }
+
+        /// <summary>True when this unit is suppressed by player fire.</summary>
+        public bool IsSuppressed
+            => GetComponent<ISuppressionHandler>()?.IsSuppressed ?? false;
+
         /// <summary>Returns the AwarenessSensor component.</summary>
         public AwarenessSensor Sensor => _sensor;
 
         /// <summary>Move toward a world position. For use by Combat Pack.</summary>
-        public void CombatMoveTo(Vector3 pos) => MoveTo(pos);
+        public void CombatMoveTo(Vector3 pos)
+        {
+            if (_agent == null) return;
+            _agent.isStopped = false;
+            _agent.stoppingDistance = 0.5f;
+            _agent.SetDestination(pos);
+        }
 
         /// <summary>Stop movement. For use by Combat Pack.</summary>
         public void CombatStop() => StopMoving();
 
         /// <summary>Face toward a world position smoothly. For use by Combat Pack.</summary>
-        public void CombatFaceToward(Vector3 pos, float speed = 360f)
+        public void CombatFaceToward(Vector3 pos, float speed = 180f)
         {
             Vector3 dir = (pos - transform.position);
             dir.y = 0f;
             if (dir.magnitude < 0.1f) return;
-            if (_agent != null) _agent.updateRotation = false;
+
+            // Disable agent rotation so we can control it manually
+            if (_agent != null && _agent.updateRotation)
+                _agent.updateRotation = false;
+
+            Quaternion target = Quaternion.LookRotation(dir.normalized);
             transform.rotation = Quaternion.RotateTowards(
-                transform.rotation,
-                Quaternion.LookRotation(dir.normalized),
-                speed * Time.deltaTime);
+                transform.rotation, target, speed * Time.deltaTime);
         }
 
         /// <summary>Re-enable agent rotation. Call after CombatFaceToward when done.</summary>

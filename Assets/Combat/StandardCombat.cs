@@ -1,19 +1,19 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.AI;
 
 namespace StealthHuntAI.Combat
 {
     /// <summary>
-    /// Full combat behaviour implementation for StealthHuntAI.
-    /// Implements ICombatBehaviour -- assign to StealthHuntAI.combatBehaviourOverride.
+    /// Goal-based combat behaviour. Guard commits to a goal and executes it fully
+    /// before reassessing. No frame-by-frame state oscillation.
     ///
-    /// Features:
-    ///   Cover seeking with multi-factor scoring
-    ///   Role-based tactics (Tracker, Flanker, Overwatch, Blocker)
-    ///   Peek fire from cover
-    ///   Suppression fire
-    ///   Repositioning when cover is compromised
-    ///   Squad crossfire coordination
+    /// Goals:
+    ///   AdvanceTo(pos)   -- move to position, shoot on the way if LOS
+    ///   HoldAndFire      -- in cover, fire at target
+    ///   Suppress         -- fire at estimated position to cover teammate
+    ///   Flank(pos)       -- move to flank position
+    ///   Search           -- move to last known, look around
     /// </summary>
     [AddComponentMenu("StealthHuntAI/Standard Combat")]
     [RequireComponent(typeof(StealthHuntAI))]
@@ -21,318 +21,481 @@ namespace StealthHuntAI.Combat
     {
         // ---------- Inspector -------------------------------------------------
 
-        [Header("Cover")]
-        [Tooltip("Max distance to search for cover points.")]
-        [Range(5f, 50f)] public float coverSearchRange = 20f;
-
-        [Tooltip("Distance at which unit stops moving to cover and starts engaging.")]
-        [Range(1f, 5f)] public float coverArrivalThreshold = 1.2f;
-
-        [Tooltip("Seconds in cover before peeking to fire.")]
-        [Range(0.5f, 5f)] public float coverWaitTime = 1.5f;
-
-        [Tooltip("Seconds exposed while peeking to fire.")]
-        [Range(0.3f, 3f)] public float peekDuration = 1.0f;
-
-        [Tooltip("Reposition if cover is compromised for this many seconds.")]
-        [Range(1f, 10f)] public float repositionThreshold = 3f;
-
         [Header("Engagement")]
-        [Tooltip("Range at which unit suppresses rather than peeks.")]
-        [Range(5f, 40f)] public float suppressionRange = 15f;
-
-        [Tooltip("Seconds of suppression fire before seeking new cover.")]
+        [Range(3f, 20f)] public float advanceStopDistance = 7f;
+        [Range(1f, 10f)] public float coverWaitTime = 1.0f;
+        [Range(0.3f, 3f)] public float peekDuration = 0.8f;
+        [Range(2f, 15f)] public float repositionThreshold = 5f;
+        [Range(5f, 40f)] public float suppressionRange = 18f;
         [Range(1f, 8f)] public float suppressionDuration = 2.5f;
+        [Range(5f, 40f)] public float coverSearchRange = 20f;
+        [Range(0.5f, 3f)] public float coverArrivalThreshold = 1.2f;
 
         [Header("Cover Weights")]
         public CoverWeights weights = new CoverWeights();
 
         [Header("Animation")]
-        [Tooltip("Clip assignments for combat animations. " +
-                 "Supports multiple clips per trigger for random variation.")]
         public List<CombatAnimSlot> animSlots = new List<CombatAnimSlot>();
-
-        [Tooltip("CrossFade transition duration between combat animations.")]
         [Range(0f, 0.5f)] public float animTransitionDuration = 0.12f;
 
         // ---------- ICombatBehaviour -----------------------------------------
 
         public bool WantsControl { get; private set; }
+        public string CurrentStateName => _goal.ToString();
 
         public void OnEnterCombat(StealthHuntAI ai)
         {
             WantsControl = true;
             _ai = ai;
-            _state = CombatState.SeekCover;
-            _stateTimer = 0f;
+            _brain = TacticalBrain.GetOrCreate(ai.squadID);
+            _brain.RegisterMember(ai);
+            _threat = new ThreatModel();
+            _goal = Goal.Idle;
+            _goalTimer = 0f;
             _currentCover = null;
+            _inCover = false;
             _cachedRole = ai.ActiveRole;
+            EnsureDefaultSlots();
 
-            // Register sector watch for Overwatch role
-            if (_cachedRole == SquadRole.Overwatch && _ai.GetTarget() != null)
+            // Bootstrap threat from squad intel
+            var board = SquadBlackboard.Get(ai.squadID);
+            if (board != null && board.SharedConfidence > 0.1f)
+                _threat.ReceiveIntel(board.SharedLastKnown, Vector3.zero,
+                                     board.SharedConfidence);
+
+            if (ai.Sensor?.CanSeeTarget == true)
             {
-                Vector3 dir = (_ai.GetTarget().Position - ai.transform.position).normalized;
-                HuntDirector.RegisterSectorWatch(dir, ai);
+                var t = ai.GetTarget();
+                if (t != null) _threat.UpdateWithSight(t.Position, t.Velocity);
             }
+
+            PickGoal();
         }
 
         public void Tick(StealthHuntAI ai)
         {
             _ai = ai;
-            _stateTimer += Time.deltaTime;
+            _goalTimer += Time.deltaTime;
 
-            switch (_state)
-            {
-                case CombatState.SeekCover: TickSeekCover(); break;
-                case CombatState.MoveToCover: TickMoveToCover(); break;
-                case CombatState.InCover: TickInCover(); break;
-                case CombatState.PeekFire: TickPeekFire(); break;
-                case CombatState.Suppressing: TickSuppressing(); break;
-                case CombatState.Reposition: TickReposition(); break;
-            }
+            UpdateThreat();
 
-            // Always update heat map with current position
-            HuntDirector.RegisterHeat(ai.transform.position, 0.1f * Time.deltaTime);
+            ExecuteGoal();
+
+            // Only pick a new goal when current one is DONE
+            if (_goal == Goal.Idle) PickGoal();
+
+            HuntDirector.RegisterHeat(ai.transform.position, 0.04f * Time.deltaTime);
         }
 
         public void OnExitCombat(StealthHuntAI ai)
         {
             WantsControl = false;
-
+            _brain?.UnregisterMember(ai);
             ReleaseCover();
-            HuntDirector.ClearSectorWatch(ai);
             ai.CombatRestoreRotation();
         }
 
-        // ---------- States ---------------------------------------------------
+        // ---------- Goals ----------------------------------------------------
 
-        private enum CombatState
-        {
-            SeekCover, MoveToCover, InCover, PeekFire, Suppressing, Reposition
-        }
+        private enum Goal { Idle, AdvanceTo, HoldAndFire, Suppress, Flank, Search }
 
         private StealthHuntAI _ai;
-        private CombatState _state;
-        private float _stateTimer;
+        private TacticalBrain _brain;
+        private ThreatModel _threat;
+        private Goal _goal;
+        private float _goalTimer;
+        private Vector3 _goalDestination;
         private CoverPoint _currentCover;
         private SquadRole _cachedRole;
-        private float _exposedTimer;
-        private bool _peekingLeft;
+        private bool _inCover;
+        private float _faceTimer;
+        private Vector3 _cachedFaceTarget;
 
-        private void TickSeekCover()
+        // ---------- Threat ---------------------------------------------------
+
+        private void UpdateThreat()
         {
             var target = _ai.GetTarget();
-            if (target == null) { WantsControl = false; return; }
+            if (target == null) return;
 
-            // Evaluate available cover points
-            var scored = CoverEvaluator.Evaluate(
-                _ai, target.Position, _cachedRole, weights, coverSearchRange);
-
-            if (scored.Count == 0)
+            if (_ai.Sensor.CanSeeTarget)
             {
-                // No cover -- fall back to Core Pursuing behaviour
-                WantsControl = false;
-                return;
-            }
-
-            // Take best cover
-            _currentCover = scored[0].Point;
-            _currentCover.Occupy(_ai);
-
-            TransitionTo(CombatState.MoveToCover);
-            PlayAnim(CombatAnimTrigger.MoveToCover);
-        }
-
-        private void TickMoveToCover()
-        {
-            if (_currentCover == null) { TransitionTo(CombatState.SeekCover); return; }
-
-            _ai.CombatMoveTo(_currentCover.transform.position);
-
-            float dist = Vector3.Distance(
-                _ai.transform.position, _currentCover.transform.position);
-
-            if (dist <= coverArrivalThreshold)
-            {
-                _ai.CombatStop();
-                TransitionTo(CombatState.InCover);
-                PlayAnim(CombatAnimTrigger.TakeCover);
-            }
-
-            // If cover is compromised while moving -- reseek
-            if (_stateTimer > 3f && !IsCoverValid())
-            {
-                ReleaseCover();
-                TransitionTo(CombatState.SeekCover);
-            }
-        }
-
-        private void TickInCover()
-        {
-            if (_currentCover == null) { TransitionTo(CombatState.SeekCover); return; }
-
-            // Face away from target while in cover
-            var target = _ai.GetTarget();
-            if (target != null)
-            {
-                Vector3 awayDir = (_ai.transform.position - target.Position);
-                awayDir.y = 0f;
-                if (awayDir.magnitude > 0.1f)
-                    _ai.CombatFaceToward(_ai.transform.position + awayDir);
-            }
-
-            PlayAnim(CombatAnimTrigger.CoverIdle);
-
-            // Check if cover is still valid
-            if (!IsCoverValid())
-            {
-                _exposedTimer += Time.deltaTime;
-                if (_exposedTimer >= repositionThreshold)
-                {
-                    ReleaseCover();
-                    TransitionTo(CombatState.Reposition);
-                    return;
-                }
+                _threat.UpdateWithSight(target.Position, target.Velocity);
+                _brain.ReportThreat(_ai, target.Position, target.Velocity, 1f);
             }
             else
             {
-                _exposedTimer = 0f;
+                _threat.UpdateWithoutSight();
+                if (_brain.SharedThreat.Confidence > _threat.Confidence)
+                    _threat.ReceiveIntel(
+                        _brain.SharedThreat.EstimatedPosition,
+                        _brain.SharedThreat.LastKnownVelocity,
+                        _brain.SharedThreat.Confidence * 0.85f);
             }
 
-            // Wait before peeking
-            if (_stateTimer < coverWaitTime) return;
+            if (!_ai.Sensor.CanSeeTarget)
+                _brain.UpdateNoSight();
+        }
 
-            // Decide: peek fire or suppress?
-            if (target != null)
+        // ---------- Goal selection -------------------------------------------
+
+        private void PickGoal()
+        {
+            _goalTimer = 0f;
+
+            // No intel -- search last known
+            if (!_threat.HasIntel && _threat.LastSeenTime < 0f)
             {
-                float dist = Vector3.Distance(_ai.transform.position, target.Position);
-                if (dist <= suppressionRange && _ai.Sensor.CanSeeTarget)
-                    TransitionTo(CombatState.Suppressing);
-                else
-                    TransitionTo(CombatState.PeekFire);
+                SetGoal(Goal.Search, _ai.transform.position);
+                return;
+            }
+
+            Vector3 dest = _threat.HasIntel
+                ? _threat.EstimatedPosition
+                : _threat.LastKnownPosition;
+
+            // Has LOS -- hold and fire from cover
+            if (_threat.HasLOS)
+            {
+                SetGoal(Goal.HoldAndFire, dest);
+                return;
+            }
+
+            // Bounding role -- coverer suppresses
+            if (_brain.GetBoundingRole(_ai) == TacticalBrain.BoundingRole.Covering)
+            {
+                SetGoal(Goal.Suppress, dest);
+                return;
+            }
+
+            // Flanker
+            if (_brain.ShouldFlank(_ai) && _threat.Confidence > 0.3f)
+            {
+                Vector3 flank = _brain.GetFlankPosition(_ai) ?? dest;
+                SetGoal(Goal.Flank, flank);
+                return;
+            }
+
+            // Default -- advance to estimated position
+            SetGoal(Goal.AdvanceTo, GetSpreadPosition(dest));
+        }
+
+        private void SetGoal(Goal g, Vector3 destination)
+        {
+            if (_goal == g) return;
+            _goal = g;
+            _goalTimer = 0f;
+            _goalDestination = destination;
+
+            // Clean up cover when leaving HoldAndFire
+            if (g != Goal.HoldAndFire) ReleaseCover();
+        }
+
+        // ---------- Goal execution -------------------------------------------
+
+        private void ExecuteGoal()
+        {
+            switch (_goal)
+            {
+                case Goal.AdvanceTo: ExecuteAdvanceTo(); break;
+                case Goal.HoldAndFire: ExecuteHoldAndFire(); break;
+                case Goal.Suppress: ExecuteSuppress(); break;
+                case Goal.Flank: ExecuteFlank(); break;
+                case Goal.Search: ExecuteSearch(); break;
             }
         }
 
-        private void TickPeekFire()
+        // AdvanceTo -- move to destination, shoot on the way, done when arrived
+        private void ExecuteAdvanceTo()
         {
-            var target = _ai.GetTarget();
-            if (target == null) { TransitionTo(CombatState.InCover); return; }
+            float dist = Vector3.Distance(_ai.transform.position, _goalDestination);
 
-            if (_currentCover != null)
+            _ai.CombatMoveTo(_goalDestination);
+            _ai.CombatRestoreRotation();
+            PlayAnim(CombatAnimTrigger.Advance);
+
+            if (_threat.HasLOS) FireAt(_threat.EstimatedPosition);
+
+            // Arrived -- pick new goal
+            if (dist < advanceStopDistance)
             {
-                // Face toward peek direction
-                Vector3 peekTarget = _currentCover.transform.position
-                                   + _currentCover.PeekDir * 3f;
-                _ai.CombatFaceToward(peekTarget);
+                CompleteGoal();
+                return;
+            }
 
-                // Choose peek side based on cover type
-                PlayAnim(DeterminePeekSide(target.Position)
+            // Got LOS while advancing -- switch to HoldAndFire
+            if (_threat.HasLOS)
+            {
+                SetGoal(Goal.HoldAndFire, _threat.EstimatedPosition);
+                return;
+            }
+
+            // Timeout -- pick fresh goal
+            if (_goalTimer > 12f) CompleteGoal();
+        }
+
+        // HoldAndFire -- find cover, get in it, peek and fire
+        private void ExecuteHoldAndFire()
+        {
+            Vector3 targetPos = _threat.HasIntel
+                ? _threat.EstimatedPosition
+                : _goalDestination;
+
+            // Find cover if not in it
+            if (!_inCover)
+            {
+                if (_currentCover == null)
+                {
+                    // Find nearest cover
+                    var scored = CoverEvaluator.Evaluate(_ai, targetPos, _cachedRole,
+                                                          weights, coverSearchRange);
+                    if (scored.Count > 0)
+                    {
+                        _currentCover = scored[0].Point;
+                        _currentCover.Occupy(_ai);
+                    }
+                    else
+                    {
+                        // No cover -- stand and fire
+                        FaceToward(targetPos);
+                        if (_threat.HasLOS) FireAt(targetPos);
+                        if (_goalTimer > repositionThreshold) CompleteGoal();
+                        return;
+                    }
+                }
+
+                // Move to cover
+                _ai.CombatMoveTo(_currentCover.transform.position);
+                _ai.CombatRestoreRotation();
+                PlayAnim(CombatAnimTrigger.MoveToCover);
+
+                float dist = Vector3.Distance(
+                    _ai.transform.position, _currentCover.transform.position);
+                var agent = _ai.GetComponent<NavMeshAgent>();
+                float rem = (agent != null && !float.IsInfinity(agent.remainingDistance)
+                             && agent.remainingDistance > 0.01f)
+                    ? agent.remainingDistance : dist;
+
+                if (rem <= coverArrivalThreshold || dist <= coverArrivalThreshold)
+                {
+                    _ai.CombatStop();
+                    _inCover = true;
+                    _brain.OnAdvancerReachedCover(_ai);
+                    PlayAnim(CombatAnimTrigger.TakeCover);
+                    _goalTimer = 0f;
+                }
+                return;
+            }
+
+            // In cover
+            FaceToward(targetPos);
+            PlayAnim(CombatAnimTrigger.CoverIdle);
+
+            if (_goalTimer < coverWaitTime) return;
+
+            if (_threat.HasLOS)
+            {
+                // Peek and fire
+                PlayAnim(DeterminePeekSide(targetPos)
                     ? CombatAnimTrigger.PeekLeft
                     : CombatAnimTrigger.PeekRight);
+                PlayAnim(CombatAnimTrigger.CoverFire);
+                FireAt(targetPos);
             }
-
-            PlayAnim(CombatAnimTrigger.CoverFire);
-
-            // Return to cover after peek duration
-            if (_stateTimer >= peekDuration)
-                TransitionTo(CombatState.InCover);
-        }
-
-        private void TickSuppressing()
-        {
-            var target = _ai.GetTarget();
-            if (target != null)
+            else if (_goalTimer > repositionThreshold)
             {
-                _ai.CombatFaceToward(target.Position);
-                PlayAnim(CombatAnimTrigger.Suppressing);
+                // Player moved -- abandon cover and advance
+                ReleaseCover();
+                CompleteGoal();
             }
-
-            if (_stateTimer >= suppressionDuration)
-                TransitionTo(CombatState.InCover);
         }
 
-        private void TickReposition()
+        // Suppress -- fire at estimated position to cover bounding partner
+        private void ExecuteSuppress()
         {
-            PlayAnim(CombatAnimTrigger.Reposition);
+            Vector3 targetPos = _threat.HasIntel
+                ? _threat.EstimatedPosition
+                : _goalDestination;
 
-            // Small delay then seek new cover
-            if (_stateTimer >= 0.5f)
-                TransitionTo(CombatState.SeekCover);
+            FaceToward(targetPos, 140f);
+            PlayAnim(CombatAnimTrigger.Suppressing);
+
+            if (_threat.Confidence > 0.1f) FireAt(targetPos);
+
+            if (_goalTimer >= suppressionDuration)
+            {
+                _brain.OnAdvancerReachedCover(_ai);
+                CompleteGoal();
+            }
+
+            // If we get LOS switch to HoldAndFire
+            if (_threat.HasLOS)
+                SetGoal(Goal.HoldAndFire, targetPos);
+        }
+
+        // Flank -- move to flank position then switch to HoldAndFire
+        private void ExecuteFlank()
+        {
+            float dist = Vector3.Distance(_ai.transform.position, _goalDestination);
+            _ai.CombatMoveTo(_goalDestination);
+            _ai.CombatRestoreRotation();
+            PlayAnim(CombatAnimTrigger.Flank);
+
+            if (dist < 2f || _threat.HasLOS)
+            {
+                SetGoal(Goal.HoldAndFire,
+                    _threat.HasIntel ? _threat.EstimatedPosition : _goalDestination);
+                return;
+            }
+
+            if (_goalTimer > 10f) CompleteGoal();
+        }
+
+        // Search -- move to last known, look around
+        private void ExecuteSearch()
+        {
+            Vector3 searchPos = _threat.LastSeenTime > -999f
+                ? _threat.LastKnownPosition
+                : _ai.transform.position;
+
+            float dist = Vector3.Distance(_ai.transform.position, searchPos);
+
+            if (dist > 3f)
+            {
+                _ai.CombatMoveTo(searchPos);
+                _ai.CombatRestoreRotation();
+                PlayAnim(CombatAnimTrigger.Advance);
+            }
+            else
+            {
+                _ai.CombatStop();
+                PlayAnim(CombatAnimTrigger.CoverIdle);
+                LookAround();
+            }
+
+            // Got intel -- stop searching
+            if (_threat.Confidence > 0.15f)
+            {
+                CompleteGoal();
+                return;
+            }
+
+            // Give up after 20s
+            if (_goalTimer > 20f)
+            {
+                WantsControl = false;
+            }
+        }
+
+        private float _lookTimer;
+        private void LookAround()
+        {
+            _lookTimer += Time.deltaTime;
+            if (_lookTimer > 1.2f)
+            {
+                _lookTimer = 0f;
+                Vector3 dir = GetOpenDirection();
+                _cachedFaceTarget = _ai.transform.position + dir * 5f;
+            }
+            if (_cachedFaceTarget != Vector3.zero)
+                _ai.CombatFaceToward(_cachedFaceTarget, 60f);
+        }
+
+        private void CompleteGoal()
+        {
+            _goal = Goal.Idle;
+            _goalTimer = 0f;
         }
 
         // ---------- Helpers --------------------------------------------------
 
-        private void TransitionTo(CombatState newState)
+        private void FaceToward(Vector3 pos, float speed = 150f)
         {
-            _state = newState;
-            _stateTimer = 0f;
+            _faceTimer += Time.deltaTime;
+            if (_faceTimer >= 0.35f)
+            {
+                _faceTimer = 0f;
+                _cachedFaceTarget = pos;
+            }
+            if (_cachedFaceTarget != Vector3.zero)
+                _ai.CombatFaceToward(_cachedFaceTarget, speed);
         }
 
-        private bool IsCoverValid()
+        private void FireAt(Vector3 pos)
         {
-            if (_currentCover == null) return false;
-            var target = _ai.GetTarget();
-            if (target == null) return true;
-
-            // Cover is invalid if target has direct line of sight to unit
-            Vector3 toUnit = _ai.transform.position - target.Position;
-            if (!Physics.Raycast(target.Position + Vector3.up,
-                                  toUnit.normalized, toUnit.magnitude - 0.3f))
-                return false; // target can see us -- cover compromised
-
-            return true;
+            _ai.GetComponent<IShootable>()?.TryShoot(pos);
         }
 
         private bool DeterminePeekSide(Vector3 targetPos)
         {
             if (_currentCover == null) return true;
-            Vector3 toTarget = (targetPos - _currentCover.transform.position).normalized;
-            float dot = Vector3.Dot(_currentCover.transform.right, toTarget);
-            return dot < 0f; // true = peek left
+            float dot = Vector3.Dot(
+                _currentCover.transform.right,
+                (targetPos - _currentCover.transform.position).normalized);
+            return dot < 0f;
         }
 
         private void ReleaseCover()
         {
-            if (_currentCover != null)
-            {
-                _currentCover.Release(_ai);
-                _currentCover = null;
-            }
-            _ai.CombatRestoreRotation();
+            if (_currentCover != null) { _currentCover.Release(_ai); _currentCover = null; }
+            _inCover = false;
+            _ai?.CombatRestoreRotation();
         }
 
-        /// <summary>Play a CombatAnimTrigger clip. Picks randomly if multiple assigned.</summary>
+        private Vector3 GetSpreadPosition(Vector3 center)
+        {
+            var units = HuntDirector.AllUnits;
+            int idx = 0;
+            for (int i = 0; i < units.Count; i++)
+                if (units[i] == _ai) { idx = i; break; }
+
+            if (idx == 0) return center;
+
+            float angle = idx * 75f;
+            float radius = 4f + idx * 1.5f;
+            Vector3 dest = center + Quaternion.Euler(0, angle, 0) * Vector3.forward * radius;
+
+            if (NavMesh.SamplePosition(dest, out NavMeshHit hit, radius, NavMesh.AllAreas))
+                return hit.position;
+            return center;
+        }
+
+        private Vector3 GetOpenDirection()
+        {
+            Vector3 origin = _ai.transform.position + Vector3.up * 1.4f;
+            Vector3 baseDir = _threat.LastKnownVelocity.magnitude > 0.1f
+                ? _threat.LastKnownVelocity.normalized
+                : _ai.transform.forward;
+            baseDir.y = 0f;
+            if (baseDir.magnitude < 0.1f) baseDir = _ai.transform.forward;
+
+            float[] angles = { 0f, -45f, 45f, -90f, 90f, -135f, 135f, 180f };
+            foreach (float a in angles)
+            {
+                Vector3 dir = Quaternion.Euler(0, a + Random.Range(-15f, 15f), 0) * baseDir;
+                if (!Physics.Raycast(origin, dir, 3f)) return dir;
+            }
+            return baseDir;
+        }
+
+        // ---------- Animation ------------------------------------------------
+
+        public string CurrentCombatState => _goal.ToString();
+
         public void PlayCombatAnim(CombatAnimTrigger trigger)
         {
-            if (_ai == null) return;
+            if (_ai?.animator == null) return;
             string clip = GetClip(trigger);
             if (string.IsNullOrEmpty(clip)) return;
             try { _ai.animator.CrossFade(clip, animTransitionDuration); } catch { }
         }
 
-        /// <summary>Play a Custom combat anim by name.</summary>
-        public void PlayCombatAnim(string customName)
-        {
-            if (_ai == null) return;
-            for (int i = 0; i < animSlots.Count; i++)
-            {
-                var slot = animSlots[i];
-                if (slot.trigger == CombatAnimTrigger.Custom
-                 && slot.customName == customName)
-                {
-                    string clip = slot.Pick();
-                    if (!string.IsNullOrEmpty(clip))
-                        try { _ai.animator.CrossFade(clip, animTransitionDuration); } catch { }
-                    return;
-                }
-            }
-        }
+        private void PlayAnim(CombatAnimTrigger t) => PlayCombatAnim(t);
 
         public string GetClip(CombatAnimTrigger trigger)
         {
             for (int i = 0; i < animSlots.Count; i++)
-                if (animSlots[i].trigger == trigger)
-                    return animSlots[i].Pick();
+                if (animSlots[i].trigger == trigger) return animSlots[i].Pick();
             return null;
         }
 
@@ -344,11 +507,9 @@ namespace StealthHuntAI.Combat
                 CombatAnimTrigger.CoverIdle,   CombatAnimTrigger.Reposition,
                 CombatAnimTrigger.PeekLeft,    CombatAnimTrigger.PeekRight,
                 CombatAnimTrigger.CoverFire,   CombatAnimTrigger.Suppressing,
+                CombatAnimTrigger.Advance,     CombatAnimTrigger.Flank,
                 CombatAnimTrigger.HitReaction, CombatAnimTrigger.Reload,
-                CombatAnimTrigger.ThrowGrenade,CombatAnimTrigger.GoProne,
-                CombatAnimTrigger.ProneFire,   CombatAnimTrigger.GetUp,
-                CombatAnimTrigger.Vault,       CombatAnimTrigger.Advance,
-                CombatAnimTrigger.StandingFire,CombatAnimTrigger.KneelingFire,
+                CombatAnimTrigger.StandingFire,
             };
             foreach (var t in defaults)
             {
@@ -362,11 +523,5 @@ namespace StealthHuntAI.Combat
         }
 
         private void Reset() => EnsureDefaultSlots();
-
-        private void PlayAnim(CombatAnimTrigger trigger)
-            => PlayCombatAnim(trigger);
-
-        // Legacy string overload -- kept for compatibility
-        private void PlayAnim(string name) { }
     }
 }

@@ -228,7 +228,19 @@ namespace StealthHuntAI.Editor
                 if (showLabels && Application.isPlaying)
                 {
                     Handles.color = Color.white;
-                    string label = unit.CurrentAlertState + " / " + unit.CurrentSubState
+                    // Show Combat Pack state via ICombatBehaviour interface
+                    string subStateLabel = unit.CurrentSubState.ToString();
+                    var combat = unit.combatBehaviourOverride as ICombatBehaviour;
+                    if (combat != null && combat.WantsControl)
+                    {
+                        // Use reflection to get state name without Combat assembly dependency
+                        var prop = unit.combatBehaviourOverride?.GetType()
+                                       .GetProperty("CurrentStateName");
+                        string scState = prop?.GetValue(unit.combatBehaviourOverride) as string;
+                        subStateLabel = "Combat" + (scState != null ? "/" + scState : "");
+                    }
+
+                    string label = unit.CurrentAlertState + " / " + subStateLabel
                                  + "\n" + unit.AwarenessLevel.ToString("F2")
                                  + "  [" + unit.ActiveRole + "]";
                     Handles.Label(unit.transform.position + Vector3.up * 3.4f, label);

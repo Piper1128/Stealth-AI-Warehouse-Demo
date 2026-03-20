@@ -1,16 +1,19 @@
 {
-    "name": "StealthHuntAI.Demo",
-    "rootNamespace": "StealthHuntAI.Demo",
+    "name": "StealthHuntAI.Combat",
+    "rootNamespace": "StealthHuntAI.Combat",
     "references": [
         "StealthHuntAI.Core",
-        "Unity.InputSystem"
+        "Unity.Burst",
+        "Unity.Collections",
+        "Unity.Jobs",
+        "Unity.Mathematics"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
     "overrideReferences": false,
     "precompiledReferences": [],
-    "autoReferenced": false,
+    "autoReferenced": true,
     "defineConstraints": [],
     "versionDefines": [],
     "noEngineReferences": false
