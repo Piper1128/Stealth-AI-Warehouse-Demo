@@ -27,7 +27,11 @@ namespace StealthHuntAI.Demo
 
         [Header("Refs")]
         public Transform muzzle;
-        public LayerMask shootLayers = ~0; // all layers by default
+        public LayerMask shootLayers = ~0;
+
+        [Header("Aim-in")]
+        [Range(0f, 2f)] public float aimInTime = 0.7f;
+        [Range(0f, 1f)] public float aimInSpreadMax = 0.3f;
 
         // IWeaponProvider
         public float ShootRange => shootRange;
@@ -38,6 +42,17 @@ namespace StealthHuntAI.Demo
         private float _fireCooldown;
         private float _reloadTimer;
         private bool _reloading;
+        private float _aimTimer;
+
+        private struct ShotTracer
+        {
+            public Vector3 from, to;
+            public float time;
+            public bool hit;
+        }
+        private readonly System.Collections.Generic.List<ShotTracer> _tracers
+            = new System.Collections.Generic.List<ShotTracer>();
+        private const float TracerDuration = 0.4f;
         private int _currentAmmo;
         private int _burstFired;
         private float _burstTimer;
@@ -58,6 +73,15 @@ namespace StealthHuntAI.Demo
 
         private void Update()
         {
+            // Aim-in timer -- rises when guard has LOS, falls when not
+            var sensor = GetComponent<AwarenessSensor>();
+            if (sensor != null && sensor.CanSeeTarget)
+                // Rise twice as fast -- guards react quickly
+                _aimTimer = Mathf.Min(aimInTime, _aimTimer + Time.deltaTime * 2f);
+            else
+                // Decay slowly -- guard remembers where target was
+                _aimTimer = Mathf.Max(0f, _aimTimer - Time.deltaTime * 0.5f);
+
             if (_fireCooldown > 0f) _fireCooldown -= Time.deltaTime;
 
             if (_reloading)
@@ -105,9 +129,14 @@ namespace StealthHuntAI.Demo
             if (_currentAmmo <= 0) return;
             _currentAmmo--;
 
+            // Aim-in: spread is high at start, falls to normal over aimInTime
+            float aimProgress = aimInTime > 0f ? _aimTimer / aimInTime : 1f;
+            float aimSpread = Mathf.Lerp(aimInSpreadMax, 0f, aimProgress);
+
             // Suppression penalty on accuracy
             float guardHealth = GetComponent<GuardHealth>()?.SuppressLevel ?? 0f;
-            float effectiveAccuracy = accuracy * (1f - guardHealth * 0.4f);
+            float effectiveAccuracy = accuracy * (1f - guardHealth * 0.4f)
+                                    * (1f - aimSpread);
 
             Vector3 origin = muzzle != null ? muzzle.position : transform.position + Vector3.up * 1.5f;
             // Use stored target pos from TryShoot -- supports estimated positions from Combat Pack
@@ -134,8 +163,17 @@ namespace StealthHuntAI.Demo
                          + Random.insideUnitSphere * spread;
             dir.Normalize();
 
-            if (Physics.Raycast(origin, dir, out RaycastHit hit,
-                shootRange * 1.5f, shootLayers))
+            bool didHit = Physics.Raycast(origin, dir, out RaycastHit hit,
+                shootRange * 1.5f, shootLayers);
+            _tracers.Add(new ShotTracer
+            {
+                from = origin,
+                to = didHit ? hit.point : origin + dir * shootRange,
+                time = Time.time,
+                hit = didHit
+            });
+
+            if (didHit)
             {
                 var playerHealth = hit.collider.GetComponentInParent<PlayerHealth>();
                 if (playerHealth != null)
@@ -173,6 +211,27 @@ namespace StealthHuntAI.Demo
         {
             _reloading = true;
             _reloadTimer = 0f;
+        }
+        private void OnDrawGizmos()
+        {
+            if (!Application.isPlaying) return;
+            float now = Time.time;
+            for (int i = _tracers.Count - 1; i >= 0; i--)
+            {
+                var t = _tracers[i];
+                float age = now - t.time;
+                if (age > TracerDuration) { _tracers.RemoveAt(i); continue; }
+                float alpha = 1f - age / TracerDuration;
+                Gizmos.color = t.hit
+                    ? new Color(1f, 0.2f, 0.1f, alpha)
+                    : new Color(1f, 0.85f, 0.1f, alpha);
+                Gizmos.DrawLine(t.from, t.to);
+                if (t.hit)
+                {
+                    Gizmos.color = new Color(1f, 0.3f, 0.1f, alpha);
+                    Gizmos.DrawSphere(t.to, 0.08f);
+                }
+            }
         }
     }
 }

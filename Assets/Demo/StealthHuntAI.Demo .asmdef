@@ -3,6 +3,7 @@
     "rootNamespace": "StealthHuntAI.Demo",
     "references": [
         "StealthHuntAI.Core",
+        "StealthHuntAI.Combat",
         "Unity.InputSystem",
         "Unity.TextMeshPro"
     ],

@@ -182,10 +182,16 @@ namespace StealthHuntAI.Combat
                              + flankDir * 8f
                              + toThreat.normalized * 5f;
 
-            if (NavMesh.SamplePosition(flankPos, out NavMeshHit hit, 6f, NavMesh.AllAreas))
-                return hit.position;
+            if (!NavMesh.SamplePosition(flankPos, out NavMeshHit hit, 6f, NavMesh.AllAreas))
+                return null;
 
-            return null;
+            // Verify path is reachable
+            var path = new NavMeshPath();
+            if (!NavMesh.CalculatePath(unit.transform.position, hit.position,
+                NavMesh.AllAreas, path)) return null;
+            if (path.status != NavMeshPathStatus.PathComplete) return null;
+
+            return hit.position;
         }
 
         // ---------- Static registry ------------------------------------------

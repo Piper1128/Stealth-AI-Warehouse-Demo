@@ -186,19 +186,30 @@ namespace StealthHuntAI
                     if (unit.CurrentAlertState == AlertState.Hostile) continue;
 
                     float dist = Vector3.Distance(sourcePos, unit.transform.position);
-                    if (dist > alertRadius) continue;
 
-                    // Share intel first
-                    if (sourceBoard != null)
+                    if (dist <= alertRadius)
                     {
-                        var board = SquadBlackboard.Get(unit.squadID);
-                        board?.ShareIntel(sourceBoard.SharedLastKnown,
-                                          sourceBoard.SharedConfidence * 0.8f);
+                        // Within radius -- share intel and force hostile
+                        if (sourceBoard != null)
+                        {
+                            var board = SquadBlackboard.Get(unit.squadID);
+                            board?.ShareIntel(sourceBoard.SharedLastKnown,
+                                              sourceBoard.SharedConfidence * 0.8f);
+                        }
+                        unit.ForceHostileSilent();
                     }
+                    else if (unit.squadID == source.squadID)
+                    {
+                        // Same squad but out of radius -- alert and send to rendezvous
+                        // Use source position as rally point so they join the fight
+                        unit.ForceHostileSilent();
 
-                    // Force hostile -- alertPropagationRadius = 0 on alerted units
-                    // so they don't re-trigger AlertSquad
-                    unit.ForceHostileSilent();
+                        // Share source position as low-confidence intel
+                        // so GOAP knows where to go
+                        var board = SquadBlackboard.Get(unit.squadID);
+                        if (board != null)
+                            board.ShareIntel(sourcePos, 0.4f);
+                    }
                 }
             }
             finally

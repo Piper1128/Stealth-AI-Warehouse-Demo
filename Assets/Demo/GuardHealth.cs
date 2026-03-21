@@ -1,10 +1,11 @@
 using UnityEngine;
 using UnityEngine.Events;
+using StealthHuntAI.Combat;
 
 namespace StealthHuntAI.Demo
 {
     [RequireComponent(typeof(StealthHuntAI))]
-    public class GuardHealth : MonoBehaviour, ISuppressionHandler
+    public class GuardHealth : MonoBehaviour, ISuppressionHandler, IHealthProvider
     {
         [Header("Health")]
         public float maxHealth = 100f;
@@ -109,6 +110,20 @@ namespace StealthHuntAI.Demo
             {
                 _ai.ForceHostile();
                 AddSuppression(0.2f);
+
+                // Broadcast pain sound -- nearby guards hear it and become suspicious
+                HuntDirector.BroadcastSound(transform.position, 0.7f, 20f);
+
+                // Share shooter position via squad blackboard
+                if (info.direction != Vector3.zero)
+                {
+                    // Estimate shooter position from bullet direction
+                    Vector3 shooterDir = -info.direction.normalized;
+                    Vector3 estimatedShooterPos = transform.position + shooterDir * 15f;
+                    var board = SquadBlackboard.Get(_ai.squadID);
+                    if (board != null)
+                        board.ShareIntel(estimatedShooterPos, 0.6f);
+                }
             }
 
             onHit?.Invoke(info);

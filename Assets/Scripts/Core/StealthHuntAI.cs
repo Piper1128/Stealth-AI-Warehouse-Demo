@@ -133,7 +133,7 @@ namespace StealthHuntAI
         [Header("Perception")]
         [Range(1f, 60f)] public float sightRange = 15f;
         [Range(10f, 360f)] public float sightAngle = 90f;
-        [Range(1f, 40f)] public float hearingRange = 10f;
+        [Range(1f, 40f)] public float hearingRange = 20f;
 
         [Tooltip("How fast sight exposure builds up. " +
                  "Higher = faster detection. 1.5 = ~0.67s at full visibility. " +
@@ -339,6 +339,8 @@ namespace StealthHuntAI
         private bool _wasInCombat;
         private bool _suppressAlertPropagation;
         private float _suspiciousDwellTimer;
+        private float _rotationVelocity;   // for smooth inertia
+        private float _currentYaw;
         private float _lastSeenTimer;      // time since last saw player
         private const float CombatMemoryTime = 8f; // stay hostile this long after losing sight
         private float _lookAroundTimer;
@@ -455,6 +457,18 @@ namespace StealthHuntAI
 
             if (animator == null)
                 animator = GetComponentInChildren<Animator>();
+
+            // Tune NavMeshAgent for smooth organic movement
+            if (_agent != null)
+            {
+                _agent.acceleration = 12f;
+                _agent.angularSpeed = 200f;
+                _agent.autoBraking = true;
+                _agent.radius = Mathf.Max(_agent.radius, 0.35f);
+                _agent.obstacleAvoidanceType = UnityEngine.AI.ObstacleAvoidanceType.HighQualityObstacleAvoidance;
+                // Unique priority prevents agents locking up when heading same direction
+                _agent.avoidancePriority = 30 + Mathf.Abs(GetInstanceID() % 40);
+            }
 
             if (animator != null)
             {
@@ -584,6 +598,7 @@ namespace StealthHuntAI
             _baseSensorDecaySpeed = _sensor.decaySpeed;
             _baseSearchDuration = searchDuration;
             _baseAgentSpeed = GetBaseSpeed();
+            _currentYaw = transform.eulerAngles.y;
 
             // Initialise sensor runtime values from inspector
             _sensor.suspicionThresh = suspicionThreshold;
@@ -1122,12 +1137,20 @@ namespace StealthHuntAI
         public AwarenessSensor Sensor => _sensor;
 
         /// <summary>Move toward a world position. For use by Combat Pack.</summary>
-        public void CombatMoveTo(Vector3 pos)
+        public void CombatMoveTo(Vector3 pos, float speedMultiplier = 1f)
         {
             if (_agent == null) return;
             _agent.isStopped = false;
             _agent.stoppingDistance = 0.5f;
-            _agent.SetDestination(pos);
+            float baseSpeed = _baseAgentSpeed > 0.1f ? _baseAgentSpeed : _agent.speed;
+            float chase = chaseSpeedMultiplier > 0.1f ? chaseSpeedMultiplier : 1f;
+            _agent.speed = Mathf.Max(0.5f, baseSpeed * chase * speedMultiplier);
+            // Sample onto NavMesh before setting destination
+            if (UnityEngine.AI.NavMesh.SamplePosition(pos, out var hit, 3f,
+                UnityEngine.AI.NavMesh.AllAreas))
+                _agent.SetDestination(hit.position);
+            else
+                _agent.SetDestination(pos);
         }
 
         /// <summary>Stop movement. For use by Combat Pack.</summary>
@@ -1140,13 +1163,21 @@ namespace StealthHuntAI
             dir.y = 0f;
             if (dir.magnitude < 0.1f) return;
 
-            // Disable agent rotation so we can control it manually
             if (_agent != null && _agent.updateRotation)
                 _agent.updateRotation = false;
 
-            Quaternion target = Quaternion.LookRotation(dir.normalized);
-            transform.rotation = Quaternion.RotateTowards(
-                transform.rotation, target, speed * Time.deltaTime);
+            // Target angle
+            float targetYaw = Mathf.Atan2(dir.x, dir.z) * Mathf.Rad2Deg;
+
+            // Smooth with inertia -- SmoothDampAngle prevents jitter
+            float smoothTime = 600f / Mathf.Max(1f, speed); // fast speed = short smooth time
+            _currentYaw = Mathf.SmoothDampAngle(
+                _currentYaw, targetYaw,
+                ref _rotationVelocity,
+                smoothTime * Time.deltaTime * 8f,
+                speed);
+
+            transform.rotation = Quaternion.Euler(0f, _currentYaw, 0f);
         }
 
         /// <summary>Re-enable agent rotation. Call after CombatFaceToward when done.</summary>

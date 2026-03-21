@@ -30,6 +30,9 @@ namespace StealthHuntAI.Demo
         public float adsSpeed = 10f;
         public float adsAccuracyBonus = 0.5f;
 
+        [Header("Sound")]
+        [Range(10f, 60f)] public float gunshotRadius = 30f;
+
         [Header("Spread")]
         public float baseSpread = 0.02f;
         public float sprintSpread = 0.08f;
@@ -67,6 +70,16 @@ namespace StealthHuntAI.Demo
         private int _burstFired;
         private float _burstTimer;
         private bool _triggerHeld;
+
+        private struct ShotTracer
+        {
+            public Vector3 from, to;
+            public float time;
+            public bool hit;
+        }
+        private readonly System.Collections.Generic.List<ShotTracer> _tracers
+            = new System.Collections.Generic.List<ShotTracer>();
+        private const float TracerDuration = 0.5f;
 
         private void Awake()
         {
@@ -164,7 +177,19 @@ namespace StealthHuntAI.Demo
             if (muzzle != null)
                 OnMuzzleFlash(muzzle.position, muzzle.forward);
 
-            if (Physics.Raycast(origin, dir, out RaycastHit hit, range, shootLayers))
+            // Broadcast gunshot sound -- guards within range become suspicious/hostile
+            HuntDirector.BroadcastSound(transform.position, 0.9f, gunshotRadius);
+
+            bool _hit = Physics.Raycast(origin, dir, out RaycastHit hit, range, shootLayers);
+            if (muzzle != null)
+                _tracers.Add(new ShotTracer
+                {
+                    from = muzzle.position,
+                    to = _hit ? hit.point : origin + dir * range,
+                    time = Time.time,
+                    hit = _hit
+                });
+            if (_hit)
             {
                 bool headshot = false;
                 try { headshot = hit.collider.CompareTag("Head"); } catch { }
@@ -275,5 +300,27 @@ namespace StealthHuntAI.Demo
         /// Called every shot with muzzle world position and forward direction.
         /// </summary>
         protected virtual void OnMuzzleFlash(Vector3 position, Vector3 forward) { }
+
+        private void OnDrawGizmos()
+        {
+            if (!Application.isPlaying) return;
+            float now = Time.time;
+            for (int i = _tracers.Count - 1; i >= 0; i--)
+            {
+                var t = _tracers[i];
+                float age = now - t.time;
+                if (age > TracerDuration) { _tracers.RemoveAt(i); continue; }
+                float alpha = 1f - age / TracerDuration;
+                Gizmos.color = t.hit
+                    ? new Color(0.1f, 1f, 0.4f, alpha)
+                    : new Color(0.2f, 0.8f, 1f, alpha);
+                Gizmos.DrawLine(t.from, t.to);
+                if (t.hit)
+                {
+                    Gizmos.color = new Color(0.2f, 1f, 0.5f, alpha);
+                    Gizmos.DrawSphere(t.to, 0.1f);
+                }
+            }
+        }
     }
 }

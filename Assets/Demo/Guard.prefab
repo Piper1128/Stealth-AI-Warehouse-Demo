@@ -1653,7 +1653,7 @@ MonoBehaviour:
     - 
     customName: 
   alertPropagationRadius: 30
-  combatBehaviourOverride: {fileID: 0}
+  combatBehaviourOverride: {fileID: 6159174385232656303}
   startingMorale: 1
   persistMorale: 0
   onBecameSuspicious:
