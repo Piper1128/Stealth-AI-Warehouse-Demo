@@ -222,18 +222,14 @@ namespace StealthHuntAI.Combat
             }
             else if (_plan == null || _plan.IsComplete)
             {
-                if (_threat.HasIntel)
+                if (_threat.HasIntel && _threat.Confidence >= 0.1f)
                 {
-                    // Has intel -- advance aggressively
                     _currentAction?.OnExit(_ai);
                     _currentAction = new AdvanceAggressivelyAction();
                     _currentAction.OnEnter(_ai, _threat);
                 }
                 else
                 {
-                    // No intel -- yield to Core stealth AI search
-                    // Core runs TickLostTarget with full ReachabilitySearch
-                    // When Core finds player again OnEnterCombat re-triggers
                     YieldToCore();
                 }
             }
@@ -298,8 +294,8 @@ namespace StealthHuntAI.Combat
 
             // Force replan on significant world state changes
             // Yield threshold -- keep fighting until confidence is very low
-            // Yield to Core when intel is stale -- 0.15 gives clear margin
-            bool noIntel = _threat.Confidence < 0.15f
+            // Yield to Core when intel is very stale
+            bool noIntel = _threat.Confidence < 0.1f
                             && !(_currentAction is SearchAction)
                             && !(_currentAction is TakeCoverAction);
             bool gotLOS = _threat.HasLOS && _currentAction is SearchAction;

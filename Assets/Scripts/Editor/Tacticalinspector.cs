@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
+using System.Linq;
 
 namespace StealthHuntAI.Editor
 {
@@ -188,6 +189,36 @@ namespace StealthHuntAI.Editor
                             threat.EstimatedPosition.ToString("F1"));
                     });
                 }
+            }
+
+            // GOAP plan and strategy
+            if (sc != null)
+            {
+                DrawSection("Combat", () =>
+                {
+                    EditorGUILayout.LabelField("Action", sc.CurrentStateName);
+                    EditorGUILayout.LabelField("Goal", sc.CurrentGoal.ToString());
+                    EditorGUILayout.LabelField("Plan", sc.CurrentPlanName);
+                    EditorGUILayout.LabelField("Strategy", sc.CurrentStrategy);
+
+                    // CQB state
+                    var brain = Combat.TacticalBrain.GetOrCreate(_selected.squadID);
+                    if (brain.CQB.IsActive)
+                    {
+                        EditorGUILayout.Space(4);
+                        GUI.color = new Color(0.4f, 0.8f, 1f);
+                        EditorGUILayout.LabelField("CQB Active", EditorStyles.boldLabel);
+                        GUI.color = Color.white;
+                        EditorGUILayout.LabelField("Entry Type", brain.CQB.CurrentEntry.ToString());
+                        var role = brain.CQB.GetRole(_selected);
+                        if (role.HasValue)
+                        {
+                            EditorGUILayout.LabelField("CQB Role",
+                                role.Value.IsBreacher ? "Breacher" :
+                                role.Value.IsFollower ? "Follower" : "Holder");
+                        }
+                    }
+                });
             }
 
             // Last spot

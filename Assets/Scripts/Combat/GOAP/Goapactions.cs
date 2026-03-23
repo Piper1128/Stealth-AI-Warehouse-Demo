@@ -185,6 +185,7 @@ namespace StealthHuntAI.Combat
         {
             s.DistToThreat = Mathf.Max(0f, s.DistToThreat - 8f);
             s.HasLOS = s.DistToThreat < 10f;
+            s.TargetEliminated = s.DistToThreat < 6f; // reaching threat = engaging
             return s;
         }
 
@@ -249,8 +250,8 @@ namespace StealthHuntAI.Combat
             }
             if (!_lastPathValid) { _waypoints = null; return true; }
 
-            // Abort on stale intel -- dont advance toward 20s old position
-            if (threat.Confidence < 0.1f || threat.TimeSinceSeen > 20f) return true;
+            // Abort on stale intel -- dont advance toward 12s old position
+            if (threat.Confidence < 0.1f || threat.TimeSinceSeen > 12f) return true;
 
             // Movement handled above by TacticalPathfinder.FollowWaypoints
             unit.CombatRestoreRotation();
@@ -306,6 +307,7 @@ namespace StealthHuntAI.Combat
         {
             s.HasLOS = true;
             s.DistToThreat -= 4f;
+            s.TargetEliminated = true;
             return s;
         }
 

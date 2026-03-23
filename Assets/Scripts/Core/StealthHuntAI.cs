@@ -803,7 +803,7 @@ namespace StealthHuntAI
             // Combat Pack handoff -- runs before SubState switch
             if (CurrentAlertState == AlertState.Hostile && _combat != null)
             {
-                if (!_wasInCombat)
+                if (!_wasInCombat || !_combat.WantsControl)
                 {
                     _wasInCombat = true;
                     _combat.OnEnterCombat(this);
@@ -812,6 +812,26 @@ namespace StealthHuntAI
                 {
                     _combat.Tick(this);
                     return;
+                }
+                // Core is searching -- shoot immediately on direct LOS
+                if (_target != null)
+                {
+                    Vector3 toPlayer = _target.Position - transform.position;
+                    bool hasDirectLOS = !Physics.Raycast(
+                        transform.position + Vector3.up * 1.6f,
+                        toPlayer.normalized,
+                        toPlayer.magnitude - 0.5f,
+                        LayerMask.GetMask("Default", "Environment"));
+
+                    if (hasDirectLOS)
+                    {
+                        // Face toward player
+                        CombatFaceToward(_target.Position, 400f);
+                        GetComponent<IShootable>()?.TryShoot(_target.Position);
+                        // Regain combat control
+                        _combat.OnEnterCombat(this);
+                        return;
+                    }
                 }
             }
 
