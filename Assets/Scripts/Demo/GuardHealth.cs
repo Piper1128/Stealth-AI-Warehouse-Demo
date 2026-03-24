@@ -196,9 +196,7 @@ namespace StealthHuntAI.Demo
         {
             var sc = GetComponent<StandardCombat>();
             if (sc == null || !sc.WantsControl) return;
-
-            // Interrupt current action and force TakeCover
-            sc.ForceAction(new TakeCoverAction());
+            sc.ForceRole(StandardCombat.CombatRole.Cover);
         }
 
         public void AddSuppression(float amount)

@@ -1,7 +1,8 @@
+using StealthHuntAI.Combat;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
-using System.Linq;
 
 namespace StealthHuntAI.Editor
 {
@@ -231,19 +232,14 @@ namespace StealthHuntAI.Editor
                 });
             }
 
-            // Last spot
-            if (sc?.CurrentSpot != null)
+            // Cover state
+            if (sc != null && sc.IsInCover)
             {
-                DrawSection("Current Spot", () =>
+                DrawSection("Cover", () =>
                 {
-                    var spot = sc.CurrentSpot;
-                    EditorGUILayout.LabelField("Provider", spot.ProviderTag);
-                    EditorGUILayout.LabelField("Score", spot.Score.ToString("F3"));
-                    EditorGUILayout.LabelField("Position", spot.Position.ToString("F1"));
-                    EditorGUILayout.LabelField("Has Cover", spot.HasHardCover.ToString());
-                    EditorGUILayout.LabelField("In Shadow", spot.IsInShadow.ToString());
-                    EditorGUILayout.LabelField("Dist To Threat",
-                        spot.DistanceToThreat.ToString("F1") + "m");
+                    GUI.color = new Color(0.4f, 0.8f, 1f);
+                    EditorGUILayout.LabelField("In Cover", EditorStyles.boldLabel);
+                    GUI.color = Color.white;
                 });
             }
         }
@@ -305,9 +301,9 @@ namespace StealthHuntAI.Editor
             }
 
             var sc = _selected?.GetComponent<Combat.StandardCombat>();
-            var spot = sc?.CurrentSpot;
+            TacticalSpot spot = null; // CurrentSpot removed -- scores shown without spot context
 
-            DrawSection("Scorer Breakdown" + (spot != null ? " (current spot)" : " (no spot)"), () =>
+            DrawSection("Scorer Breakdown (no spot)", () =>
             {
                 if (_sys.Scorers == null) return;
 
@@ -331,7 +327,8 @@ namespace StealthHuntAI.Editor
                     if (!Mathf.Approximately(w, scorer.Weight)) scorer.Weight = w;
 
                     // Score bar if spot available
-                    if (spot != null && spot.ScoreBreakdown.TryGetValue(scorer.Name, out float val))
+                    float val = 0f;
+                    if (spot != null && spot.ScoreBreakdown.TryGetValue(scorer.Name, out val))
                     {
                         Rect barRect = GUILayoutUtility.GetRect(60, 14);
                         EditorGUI.DrawRect(barRect, new Color(0.15f, 0.15f, 0.15f));

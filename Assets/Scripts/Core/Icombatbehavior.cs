@@ -1,3 +1,5 @@
+using UnityEngine;
+
 namespace StealthHuntAI
 {
     /// <summary>
@@ -26,6 +28,8 @@ namespace StealthHuntAI
     /// </summary>
     public interface ICombatBehaviour
     {
+        /// <summary>Called when a near shot is heard -- take cover immediately.</summary>
+        void OnNearShot(Vector3 shotOrigin);
         /// <summary>
         /// Set to true when Combat Pack wants to control Hostile behaviour.
         /// Core checks this every frame -- Combat Pack sets it internally.

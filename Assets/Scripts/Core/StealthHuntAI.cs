@@ -417,6 +417,15 @@ namespace StealthHuntAI
         {
             if (behaviourMode == BehaviourMode.GuardZone && guardZoneWaypointCount > 0)
                 GenerateGuardZonePoints();
+
+            // Auto-find combat behaviour if not assigned in Inspector
+            if (_combat == null)
+            {
+                if (combatBehaviourOverride != null)
+                    _combat = combatBehaviourOverride as ICombatBehaviour;
+                else
+                    _combat = GetComponent<ICombatBehaviour>();
+            }
         }
 
         private void Update()
@@ -442,6 +451,30 @@ namespace StealthHuntAI
         /// Finding a dead body instantly triggers Suspicious or Hostile
         /// depending on current alert state.
         /// </summary>
+        /// <summary>
+        /// Called by HuntDirector when a gunshot occurs near this unit.
+        /// Passive/Suspicious guards react by taking cover.
+        /// </summary>
+        public void OnNearShotHeard(Vector3 shotOrigin, float intensity)
+        {
+            if (IsDead) return;
+
+            if (CurrentAlertState == AlertState.Passive
+             || CurrentAlertState == AlertState.Suspicious)
+            {
+                // Near shot -- duck and go hostile
+                ForceHostile();
+                var board = SquadBlackboard.Get(squadID);
+                board?.ShareIntel(shotOrigin, 0.3f);
+                _combat?.OnNearShot(shotOrigin);
+            }
+            else if (CurrentAlertState == AlertState.Hostile)
+            {
+                // Already hostile -- just register shot direction, dont reset state
+                _combat?.OnNearShot(shotOrigin);
+            }
+        }
+
         private void TickDeadBodyDetection()
         {
             if (IsDead || CurrentAlertState == AlertState.Hostile) return;
@@ -758,12 +791,17 @@ namespace StealthHuntAI
                     }
                     else if (awareness <= 0.05f)
                     {
-                        // Must stay suspicious for minimum dwell time before returning to passive
-                        _suspiciousDwellTimer += Time.deltaTime;
-                        if (_suspiciousDwellTimer >= suspiciousDwellTime)
+                        // Dont count dwell while actively investigating or searching
+                        bool activeSearch = CurrentSubState == SubState.Investigating
+                                         || CurrentSubState == SubState.Searching;
+                        if (!activeSearch)
                         {
-                            _suspiciousDwellTimer = 0f;
-                            TransitionTo(AlertState.Passive, SubState.Returning);
+                            _suspiciousDwellTimer += Time.deltaTime;
+                            if (_suspiciousDwellTimer >= suspiciousDwellTime)
+                            {
+                                _suspiciousDwellTimer = 0f;
+                                TransitionTo(AlertState.Passive, SubState.Returning);
+                            }
                         }
                     }
                     else
@@ -1259,14 +1297,13 @@ namespace StealthHuntAI
             dir.y = 0f;
             if (dir.magnitude < 0.1f) return;
 
-            if (_agent != null && _agent.updateRotation)
-                _agent.updateRotation = false;
+            // Use angularSpeed instead of disabling updateRotation
+            // Disabling updateRotation stops NavMesh agent movement
+            if (_agent != null)
+                _agent.angularSpeed = speed;
 
-            // Target angle
             float targetYaw = Mathf.Atan2(dir.x, dir.z) * Mathf.Rad2Deg;
-
-            // Smooth with inertia -- SmoothDampAngle prevents jitter
-            float smoothTime = 600f / Mathf.Max(1f, speed); // fast speed = short smooth time
+            float smoothTime = 600f / Mathf.Max(1f, speed);
             _currentYaw = Mathf.SmoothDampAngle(
                 _currentYaw, targetYaw,
                 ref _rotationVelocity,
@@ -1276,10 +1313,9 @@ namespace StealthHuntAI
             transform.rotation = Quaternion.Euler(0f, _currentYaw, 0f);
         }
 
-        /// <summary>Re-enable agent rotation. Call after CombatFaceToward when done.</summary>
         public void CombatRestoreRotation()
         {
-            if (_agent != null) _agent.updateRotation = true;
+            if (_agent != null) _agent.angularSpeed = 200f; // restore default
         }
 
         /// <summary>Transition to a SubState. For use by Combat Pack.</summary>

@@ -183,30 +183,23 @@ namespace StealthHuntAI
                 {
                     var unit = _units[i];
                     if (unit == null || unit == source) continue;
-                    if (unit.CurrentAlertState == AlertState.Hostile) continue;
+                    if (unit.squadID != source.squadID) continue;
 
                     float dist = Vector3.Distance(sourcePos, unit.transform.position);
 
-                    if (unit.squadID != source.squadID) continue;
+                    // Always alert non-hostile squad members
+                    if (unit.CurrentAlertState != AlertState.Hostile)
+                        unit.ForceHostileSilent();
 
-                    // Always alert all squad members
-                    unit.ForceHostileSilent();
-
+                    // Share intel with ALL squad members including already-hostile ones
                     if (sourceBoard != null)
                     {
                         var board = SquadBlackboard.Get(unit.squadID);
                         if (dist <= alertRadius)
-                        {
-                            // Close -- full intel, guards know where to go
                             board?.ShareIntel(sourceBoard.SharedLastKnown,
                                 sourceBoard.SharedConfidence * 0.8f);
-                        }
                         else
-                        {
-                            // Far -- very low confidence so guards SEARCH
-                            // toward source direction instead of rushing blindly
                             board?.ShareIntel(sourcePos, 0.2f);
-                        }
                     }
                 }
             }
@@ -1033,6 +1026,10 @@ namespace StealthHuntAI
 
                 unit.GetComponent<AwarenessSensor>()
                     ?.HearSound(position, scaledIntensity, arrivalDir);
+
+                // Near high-intensity shot -- passive/suspicious guards react immediately
+                if (intensity >= 0.8f && dist <= 12f)
+                    unit.OnNearShotHeard(position, scaledIntensity);
             }
         }
 
@@ -1168,6 +1165,10 @@ namespace StealthHuntAI
 
                 unit.GetComponent<AwarenessSensor>()
                     ?.HearSound(position, scaledIntensity, arrivalDir);
+
+                // Near high-intensity shot -- passive/suspicious guards react immediately
+                if (intensity >= 0.8f && dist <= 12f)
+                    unit.OnNearShotHeard(position, scaledIntensity);
             }
         }
 

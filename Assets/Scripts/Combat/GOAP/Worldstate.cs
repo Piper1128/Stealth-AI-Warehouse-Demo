@@ -14,6 +14,7 @@ namespace StealthHuntAI.Combat
         // Threat
         public bool HasLOS;
         public float ThreatConfidence;
+        public bool HasIntel => ThreatConfidence > 0.05f;
         public float DistToThreat;
         public bool ThreatInChokepoint;
 
@@ -28,6 +29,12 @@ namespace StealthHuntAI.Combat
         public int SquadSize;
         public bool SquadmateSuppressing;
         public bool SquadmateAdvancing;
+        public int SquadAdvancingCount;  // how many already advancing
+        public int SquadFlankingCount;   // how many already flanking
+        public int SquadInCoverCount;    // how many in cover/suppressing
+        public bool HasShotFrom;          // guard was shot at without LOS
+        public bool HasCommittedGoal;     // squad has a committed goal
+        public Vector3 CommittedPosition;   // position of committed goal
 
         // World
         public bool ChokepointNearby;
@@ -62,7 +69,7 @@ namespace StealthHuntAI.Combat
 
         private static readonly Dictionary<int, CachedChecks> _checkCache
             = new Dictionary<int, CachedChecks>();
-        private const float CacheInterval = 2f;
+        private const float CacheInterval = 0.5f;
 
         private static CachedChecks GetChecks(StealthHuntAI unit)
         {
@@ -90,6 +97,9 @@ namespace StealthHuntAI.Combat
             int total = 0;
             bool squadSuppressing = false;
             bool squadAdvancing = false;
+            int advancingCount = 0;
+            int flankingCount = 0;
+            int inCoverCount = 0;
 
             for (int i = 0; i < units.Count; i++)
             {
@@ -100,8 +110,10 @@ namespace StealthHuntAI.Combat
 
                 var sc = u.GetComponent<StandardCombat>();
                 if (sc == null || u == unit) continue;
-                if (sc.CurrentGoal == StandardCombat.Goal.Suppress) squadSuppressing = true;
-                if (sc.CurrentGoal == StandardCombat.Goal.AdvanceTo) squadAdvancing = true;
+                if (sc.CurrentGoal == StandardCombat.Goal.Suppress) { squadSuppressing = true; inCoverCount++; }
+                if (sc.CurrentGoal == StandardCombat.Goal.HoldAndFire) inCoverCount++;
+                if (sc.CurrentGoal == StandardCombat.Goal.AdvanceTo) { squadAdvancing = true; advancingCount++; }
+                if (sc.CurrentGoal == StandardCombat.Goal.Flank) flankingCount++;
             }
 
             float health = 1f;
@@ -126,8 +138,14 @@ namespace StealthHuntAI.Combat
                 Awareness = unit.AwarenessLevel,
                 SquadStrength = total > 0 ? (float)alive / total : 1f,
                 SquadSize = total,
+                HasShotFrom = threat.HasShotFrom,
+                HasCommittedGoal = brain?.CommittedGoal != null,
+                CommittedPosition = brain?.CommittedGoal?.Position ?? Vector3.zero,
                 SquadmateSuppressing = squadSuppressing,
                 SquadmateAdvancing = squadAdvancing,
+                SquadAdvancingCount = advancingCount,
+                SquadFlankingCount = flankingCount,
+                SquadInCoverCount = inCoverCount,
                 NearEntryPoint = GetChecks(unit).NearEntry,
                 AtStackPosition = false,
                 AtDomPoint = false,

@@ -281,30 +281,7 @@ namespace StealthHuntAI.Editor
 
         private void AutoAssign(StandardCombat sc)
         {
-            Undo.RecordObject(sc, "Auto Assign Combat Animations");
-            sc.EnsureDefaultSlots();
-
-            foreach (var kv in Keywords)
-            {
-                for (int i = 0; i < sc.animSlots.Count; i++)
-                {
-                    var slot = sc.animSlots[i];
-                    if (slot.trigger != kv.Key) continue;
-
-                    // Build keyword list including user extras
-                    var allKw = new List<string>(kv.Value);
-                    allKw.AddRange(slot.extraKeywords);
-
-                    string best = FindBestMatch(allKw);
-                    if (best == null) continue;
-
-                    if (slot.clips.Count == 0) slot.clips.Add(best);
-                    else if (string.IsNullOrEmpty(slot.clips[0])) slot.clips[0] = best;
-                }
-            }
-
-            EditorUtility.SetDirty(sc);
-            serializedObject.Update();
+            // Animation slots removed from new StandardCombat architecture
         }
 
         private string FindBestMatch(List<string> keywords)

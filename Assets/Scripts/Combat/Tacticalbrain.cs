@@ -201,6 +201,49 @@ namespace StealthHuntAI.Combat
             return hit.position;
         }
 
+        // ---------- Committed goal -------------------------------------------
+
+        public class CommittedGoalData
+        {
+            public enum GoalType { ClearRoom, PursueTarget }
+            public GoalType Type;
+            public Vector3 Position;
+            public float Timeout;
+            public float StartTime;
+            public bool IsExpired => Time.time - StartTime > Timeout;
+        }
+
+        public CommittedGoalData CommittedGoal { get; private set; }
+
+        /// <summary>Commit entire squad to a goal. Guards wont replann away from it.</summary>
+        public void SetCommittedGoal(CommittedGoalData.GoalType type,
+                                      Vector3 position, float timeout = 120f)
+        {
+            CommittedGoal = new CommittedGoalData
+            {
+                Type = type,
+                Position = position,
+                Timeout = timeout,
+                StartTime = Time.time,
+            };
+        }
+
+        /// <summary>Clear committed goal -- squad can now pick new objectives.</summary>
+        public void ClearCommittedGoal() => CommittedGoal = null;
+
+        /// <summary>Interrupt committed goal -- new intel or ambush.</summary>
+        public void InterruptCommittedGoal(string reason)
+        {
+            CommittedGoal = null;
+        }
+
+        /// <summary>Tick committed goal -- expire if timeout reached.</summary>
+        public void TickCommittedGoal()
+        {
+            if (CommittedGoal != null && CommittedGoal.IsExpired)
+                CommittedGoal = null;
+        }
+
         // ---------- Static registry ------------------------------------------
 
         private static readonly Dictionary<int, TacticalBrain> _brains

@@ -1,3 +1,4 @@
+using StealthHuntAI.Combat.CQB;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -11,7 +12,7 @@ namespace StealthHuntAI.Combat
     public class TakeCoverAction : GoapAction
     {
         public override string Name => "TakeCover";
-        public override bool IsInterruptible => false; // must reach cover
+        public override bool IsInterruptible => true;
         public override int Priority => 8;
         public override FormationType PreferredFormation => FormationType.None;
 
@@ -194,10 +195,13 @@ namespace StealthHuntAI.Combat
         {
             float base_cost = 1f + (1f - s.ThreatConfidence) * 1.5f
                             + (s.SquadStrength < 0.5f ? 1f : 0f);
-            // Heavy penalty if squadmate already advancing -- avoid rush
-            if (s.SquadmateAdvancing) base_cost += 2.5f;
-            return base_cost;
+            base_cost += Mathf.Max(0, s.SquadAdvancingCount - 1) * 2.0f;
+            if (s.SquadAdvancingCount > 0 && s.SquadInCoverCount == 0)
+                base_cost += 2.0f;
+            return base_cost * StrategyMultiplier(unit, "advance");
         }
+
+        public bool Immediate; // skip stagger -- used by nudge on LOS loss
 
         public override void OnEnter(StealthHuntAI unit, ThreatModel threat)
         {
@@ -205,8 +209,11 @@ namespace StealthHuntAI.Combat
             _pathCheckTimer = 0f;
             _lastPathValid = true;
 
-            // Stagger advance -- if squad member already advancing, wait
+            // Nudge -- skip stagger entirely, move immediately
             _startDelay = 0f;
+            if (Immediate) return;
+
+            // Stagger advance -- if squad member already advancing, wait
             var units = HuntDirector.AllUnits;
             for (int i = 0; i < units.Count; i++)
             {
@@ -215,7 +222,7 @@ namespace StealthHuntAI.Combat
                 var sc = u.GetComponent<StandardCombat>();
                 if (sc != null && sc.CurrentStateName == "AdvanceAggressively")
                 {
-                    _startDelay = UnityEngine.Random.Range(1.0f, 2.5f);
+                    _startDelay = UnityEngine.Random.Range(0.1f, 0.4f);
                     break;
                 }
             }
@@ -226,32 +233,41 @@ namespace StealthHuntAI.Combat
         public override bool Execute(StealthHuntAI unit, ThreatModel threat,
                                       TacticalBrain brain, float dt)
         {
-            // Spread advance destination -- each unit targets slightly different position
-            Vector3 raw = GetBestKnownPosition(unit, threat);
-            var units = HuntDirector.AllUnits;
-            int idx = 0;
-            for (int i = 0; i < units.Count; i++)
-                if (units[i] == unit) { idx = i; break; }
+            // Use LastKnownPosition -- EstimatedPosition extrapolates and causes oscillation
+            Vector3 raw = threat.LastSeenTime > -999f
+                ? threat.LastKnownPosition
+                : threat.EstimatedPosition;
+            var allUnits = HuntDirector.AllUnits;
+            int squadIdx = 0;
+            int squadCount = 0;
+            for (int i = 0; i < allUnits.Count; i++)
+            {
+                var u = allUnits[i];
+                if (u == null || u.squadID != unit.squadID) continue;
+                if (u == unit) squadIdx = squadCount;
+                squadCount++;
+            }
 
-            // Offset perpendicular to threat direction based on index
+            // Offset perpendicular to threat direction based on squad index
+            // Spreads guards 3m apart so they dont stack on same point
             Vector3 toThreat = (raw - unit.transform.position);
             toThreat.y = 0f;
             Vector3 perpDir = Vector3.Cross(toThreat.normalized, Vector3.up);
-            float offset = (idx % 2 == 0 ? 1f : -1f) * (2f + idx * 0.5f);
-            Vector3 spread = raw + perpDir * offset;
+            float spread = (squadIdx - squadCount * 0.5f) * 3f;
+            Vector3 dest = raw + perpDir * spread;
 
             // Build safe waypoint route if not set
             if (_waypoints == null || _waypointIdx >= _waypoints.Count)
             {
-                _waypoints = TacticalPathfinder.BuildAdvanceRoute(unit, raw);
+                _waypoints = TacticalPathfinder.BuildAdvanceRoute(unit, dest);
                 _waypointIdx = 0;
             }
             if (_waypoints != null && _waypoints.Count > 0)
                 TacticalPathfinder.FollowWaypoints(unit, _waypoints, ref _waypointIdx);
             else
             {
-                Vector3 fallbackDest = spread;
-                if (UnityEngine.AI.NavMesh.SamplePosition(spread, out var hit, 4f,
+                Vector3 fallbackDest = dest;
+                if (UnityEngine.AI.NavMesh.SamplePosition(dest, out var hit, 4f,
                     UnityEngine.AI.NavMesh.AllAreas))
                     fallbackDest = hit.position;
                 unit.CombatMoveTo(fallbackDest);
@@ -363,28 +379,74 @@ namespace StealthHuntAI.Combat
             _suppressTimer = 0f;
             _waypointIdx = 0;
 
-            Vector3 threatPos = GetBestKnownPosition(unit, threat);
-            _waypoints = TacticalPathfinder.BuildFlankRoute(unit, threatPos);
-            if (_waypoints != null && _waypoints.Count > 0)
-            {
-                _flankDest = _waypoints[_waypoints.Count - 1];
-                _destSet = true;
-            }
+            // Use LastKnownPosition for routing -- EstimatedPosition extrapolates
+            // and moves constantly making pathfinding unstable
+            Vector3 threatPos = threat.LastSeenTime > -999f
+                ? threat.LastKnownPosition
+                : threat.EstimatedPosition;
+            var brain2 = TacticalBrain.GetOrCreate(unit.squadID);
+
+            // If CQB is active or an entry point is nearby -- route toward it
+            // Flanking through a door is more effective than flanking around a building
+            EntryPoint targetEntry = null;
+            if (brain2.CQB.IsActive && brain2.CQB.ActiveEntry != null)
+                targetEntry = brain2.CQB.ActiveEntry;
             else
             {
-                var pos = TacticalBrain.GetOrCreate(unit.squadID)?.GetFlankPosition(unit);
-                if (pos.HasValue) { _flankDest = pos.Value; _destSet = true; }
+                var ep = EntryPointRegistry.FindBest(unit.transform.position, threatPos);
+                if (ep != null)
+                {
+                    float distEp = Vector3.Distance(ep.transform.position, threatPos);
+                    if (distEp < 20f) targetEntry = ep;
+                }
+            }
+
+            if (targetEntry != null)
+            {
+                // Route toward stack position at entry point
+                Vector3 stackPos = unit.squadID % 2 == 0
+                    ? targetEntry.StackLeftPos
+                    : targetEntry.StackRightPos;
+                _waypoints = TacticalPathfinder.BuildAdvanceRoute(unit, stackPos);
+                if (_waypoints != null && _waypoints.Count > 0)
+                {
+                    _flankDest = stackPos;
+                    _destSet = true;
+                }
+            }
+
+            // Fallback -- regular flank route
+            if (!_destSet)
+            {
+                _waypoints = TacticalPathfinder.BuildFlankRoute(unit, threatPos);
+                if (_waypoints != null && _waypoints.Count > 0)
+                {
+                    _flankDest = _waypoints[_waypoints.Count - 1];
+                    _destSet = true;
+                }
+                else
+                {
+                    var pos = TacticalBrain.GetOrCreate(unit.squadID)?.GetFlankPosition(unit);
+                    if (pos.HasValue) { _flankDest = pos.Value; _destSet = true; }
+                }
             }
         }
 
         public override bool Execute(StealthHuntAI unit, ThreatModel threat,
                                       TacticalBrain brain, float dt)
         {
-            if (!_destSet) return true;
-
-            // Abort flank if intel too stale or position too old
+            // Abort conditions
             if (threat.Confidence < 0.12f) return true;
-            if (threat.TimeSinceSeen > 15f) return true; // 15s old -- give up
+            if (threat.TimeSinceSeen > 15f) return true;
+
+            // No destination -- move directly toward last known instead of stopping
+            if (!_destSet)
+            {
+                unit.CombatMoveTo(threat.LastSeenTime > -999f
+                    ? threat.LastKnownPosition
+                    : threat.EstimatedPosition, 1.0f);
+                return false;
+            }
 
             bool arrived = TacticalPathfinder.FollowWaypoints(
                 unit, _waypoints, ref _waypointIdx);
@@ -452,7 +514,13 @@ namespace StealthHuntAI.Combat
         }
 
         public override float GetCost(WorldState s, StealthHuntAI unit)
-            => s.SquadmateSuppressing ? 1.5f : 0.5f;
+        {
+            // Suppress is cheap when squad is advancing -- essential role
+            if (s.SquadmateAdvancing || s.SquadFlankingCount > 0) return 0.4f;
+            // Already suppressing -- slightly more expensive
+            if (s.SquadmateSuppressing) return 1.5f;
+            return 0.8f;
+        }
 
         public override void OnEnter(StealthHuntAI unit, ThreatModel threat)
             => _duration = 0f;

@@ -41,30 +41,37 @@ namespace StealthHuntAI.Combat
             Withdraw = 1f,
         };
 
-        public static StrategyCostModifier For(SquadStrategy s, BuddyRole role)
-            => s switch
+        /// <summary>
+        /// Get cost modifier for a unit based on strategy and squad position index.
+        /// Even index = aggressive role (advance/flank), odd index = support role (suppress/cover).
+        /// </summary>
+        public static StrategyCostModifier For(SquadStrategy s, int squadIndex)
+        {
+            bool isAggressive = squadIndex % 2 == 0;
+            return s switch
             {
-                SquadStrategy.Bounding => role == BuddyRole.Tracker
-                    ? new StrategyCostModifier { Advance = 0.5f, Flank = 0.7f, Suppress = 2f, TakeCover = 1f, HighGround = 1.5f, Withdraw = 3f }
-                    : new StrategyCostModifier { Advance = 2f, Flank = 1.5f, Suppress = 0.3f, TakeCover = 0.5f, HighGround = 1f, Withdraw = 3f },
+                SquadStrategy.Bounding => isAggressive
+                    ? new StrategyCostModifier { Advance = 0.4f, Flank = 0.6f, Suppress = 3f, TakeCover = 1.5f, HighGround = 1.5f, Withdraw = 3f }
+                    : new StrategyCostModifier { Advance = 3f, Flank = 2f, Suppress = 0.3f, TakeCover = 0.4f, HighGround = 1f, Withdraw = 3f },
 
-                SquadStrategy.Pincer => role == BuddyRole.Tracker
-                    ? new StrategyCostModifier { Advance = 0.6f, Flank = 0.3f, Suppress = 2f, TakeCover = 1.5f, HighGround = 1f, Withdraw = 3f }
-                    : new StrategyCostModifier { Advance = 1.5f, Flank = 0.3f, Suppress = 0.5f, TakeCover = 1f, HighGround = 1f, Withdraw = 3f },
+                SquadStrategy.Pincer => isAggressive
+                    ? new StrategyCostModifier { Advance = 0.5f, Flank = 0.2f, Suppress = 3f, TakeCover = 2f, HighGround = 1f, Withdraw = 3f }
+                    : new StrategyCostModifier { Advance = 2f, Flank = 0.2f, Suppress = 0.4f, TakeCover = 0.8f, HighGround = 1f, Withdraw = 3f },
 
-                SquadStrategy.Suppress => role == BuddyRole.Suppressor
-                    ? new StrategyCostModifier { Advance = 3f, Flank = 2f, Suppress = 0.2f, TakeCover = 0.4f, HighGround = 1.5f, Withdraw = 3f }
-                    : new StrategyCostModifier { Advance = 0.6f, Flank = 0.4f, Suppress = 2f, TakeCover = 1f, HighGround = 0.8f, Withdraw = 3f },
+                SquadStrategy.Suppress => isAggressive
+                    ? new StrategyCostModifier { Advance = 0.5f, Flank = 0.4f, Suppress = 4f, TakeCover = 1.5f, HighGround = 1f, Withdraw = 3f }
+                    : new StrategyCostModifier { Advance = 4f, Flank = 3f, Suppress = 0.2f, TakeCover = 0.3f, HighGround = 1.5f, Withdraw = 3f },
 
                 SquadStrategy.Withdraw =>
                     new StrategyCostModifier { Advance = 5f, Flank = 5f, Suppress = 2f, TakeCover = 0.3f, HighGround = 2f, Withdraw = 0.2f },
 
-                SquadStrategy.Overwatch => role == BuddyRole.Suppressor
-                    ? new StrategyCostModifier { Advance = 3f, Flank = 2f, Suppress = 0.5f, TakeCover = 1f, HighGround = 0.2f, Withdraw = 3f }
-                    : new StrategyCostModifier { Advance = 0.5f, Flank = 0.6f, Suppress = 1.5f, TakeCover = 1f, HighGround = 2f, Withdraw = 3f },
+                SquadStrategy.Overwatch => isAggressive
+                    ? new StrategyCostModifier { Advance = 0.4f, Flank = 0.5f, Suppress = 2f, TakeCover = 1f, HighGround = 3f, Withdraw = 3f }
+                    : new StrategyCostModifier { Advance = 0.4f, Flank = 0.5f, Suppress = 1.5f, TakeCover = 1f, HighGround = 0.3f, Withdraw = 3f },
 
                 _ => Neutral,
             };
+        }
     }
 
     /// <summary>

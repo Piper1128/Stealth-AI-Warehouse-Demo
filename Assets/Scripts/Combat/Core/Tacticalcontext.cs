@@ -93,8 +93,9 @@ namespace StealthHuntAI.Combat
                     if (u != unit)
                     {
                         var sc = u.GetComponent<StandardCombat>();
-                        if (sc?.CurrentSpot != null)
-                            reserved.Add(sc.CurrentSpot.Position);
+                        // CurrentSpot removed -- use cover position from IsInCover
+                        if (sc != null && sc.IsInCover)
+                            reserved.Add(sc.transform.position);
                     }
                 }
             }

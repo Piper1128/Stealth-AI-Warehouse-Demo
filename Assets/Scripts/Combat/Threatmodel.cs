@@ -28,6 +28,25 @@ namespace StealthHuntAI.Combat
         /// <summary>True when guard currently has line of sight to player.</summary>
         public bool HasLOS { get; private set; }
 
+        // Shot-from intel -- set when taking fire without LOS
+        public Vector3 ShotFromPosition { get; private set; }
+        public Vector3 ShotFromDirection { get; private set; }
+        public float ShotFromTime { get; private set; } = -1f;
+        public bool HasShotFrom => ShotFromTime > 0f
+                                         && Time.time - ShotFromTime < 20f;
+        public float ShotFromAge => HasShotFrom
+                                         ? Time.time - ShotFromTime : 999f;
+
+        public float DistanceTo(StealthHuntAI unit)
+            => Vector3.Distance(unit.transform.position, EstimatedPosition);
+
+        public void RegisterShotFrom(Vector3 position, Vector3 direction)
+        {
+            ShotFromPosition = position;
+            ShotFromDirection = direction;
+            ShotFromTime = Time.time;
+        }
+
         // ---------- Estimated data -------------------------------------------
 
         /// <summary>
@@ -77,25 +96,29 @@ namespace StealthHuntAI.Combat
 
             float elapsed = TimeSinceSeen;
 
-            // Extrapolate position based on last known velocity
-            Vector3 extrapolated = LastKnownPosition + LastKnownVelocity * elapsed;
-
-            // Clamp extrapolation distance
-            float extrapDist = Vector3.Distance(LastKnownPosition, extrapolated);
-            if (extrapDist > MaxExtrapolationDist)
+            // Only extrapolate for first 3 seconds -- after that use LastKnownPosition
+            // Extrapolation beyond 3s causes unstable routing destinations
+            Vector3 extrapolated;
+            if (elapsed < 3f)
             {
-                extrapolated = LastKnownPosition +
-                    (extrapolated - LastKnownPosition).normalized * MaxExtrapolationDist;
+                extrapolated = LastKnownPosition + LastKnownVelocity * elapsed;
+                float extrapDist = Vector3.Distance(LastKnownPosition, extrapolated);
+                if (extrapDist > MaxExtrapolationDist)
+                    extrapolated = LastKnownPosition +
+                        (extrapolated - LastKnownPosition).normalized * MaxExtrapolationDist;
+            }
+            else
+            {
+                extrapolated = LastKnownPosition;
             }
 
-            // Sample onto NavMesh -- prevents estimated position inside walls
+            // Sample onto NavMesh
             if (UnityEngine.AI.NavMesh.SamplePosition(extrapolated, out var hit,
                 3f, UnityEngine.AI.NavMesh.AllAreas))
                 EstimatedPosition = hit.position;
             else
-                EstimatedPosition = LastKnownPosition; // fallback to last known
+                EstimatedPosition = LastKnownPosition;
 
-            // Confidence decays over time
             Confidence = Mathf.Clamp01(1f - elapsed / ConfidenceDecayTime);
         }
 

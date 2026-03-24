@@ -22,7 +22,7 @@ namespace StealthHuntAI.Combat
         private Vector3 _stackPos;
         private bool _destSet;
         private float _waitTimer;
-        private const float MaxWait = 4f; // abort if buddy never arrives
+        private const float MaxWait = 12f; // wait longer for distant guards
 
         public override bool CheckPreconditions(WorldState s)
             => s.NearEntryPoint && !s.RoomCleared;
@@ -62,21 +62,20 @@ namespace StealthHuntAI.Combat
                 return false;
             }
 
-            // In position -- signal and wait
+            // In position -- face door and breach after short stagger delay
+            // No waiting for buddy -- each guard breaches individually
             unit.CombatStop();
             brain.CQB.SignalStackReady(unit);
 
+            if (brain.CQB.ActiveEntry != null)
+                unit.CombatFaceToward(
+                    brain.CQB.ActiveEntry.transform.position, 120f);
+
             _waitTimer += dt;
 
-            // Dynamic -- both enter simultaneously when both ready
-            if (brain.CQB.CurrentEntry == CQBController.EntryType.Dynamic)
-                return brain.CQB.BothReady || _waitTimer > MaxWait;
-
-            // Deliberate -- breacher goes first, follower waits for signal
-            if (brain.CQB.IsFollower(unit))
-                return brain.CQB.BreacherReady || _waitTimer > MaxWait;
-
-            return brain.CQB.BreacherReady || _waitTimer > MaxWait;
+            // Breacher goes at 0.3s, follower at 0.6s -- small stagger prevents collision
+            float breachDelay = brain.CQB.IsFollower(unit) ? 0.6f : 0.3f;
+            return _waitTimer >= breachDelay;
         }
 
         public override void OnExit(StealthHuntAI unit)

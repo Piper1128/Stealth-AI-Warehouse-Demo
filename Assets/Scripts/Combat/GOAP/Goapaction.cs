@@ -72,6 +72,36 @@ namespace StealthHuntAI.Combat
 
         private IShootable _cachedShootable;
 
+        /// <summary>Get strategy cost multiplier for this action type.</summary>
+        protected float StrategyMultiplier(StealthHuntAI unit, string actionType)
+        {
+            var brain = TacticalBrain.GetOrCreate(unit.squadID);
+            var strategy = brain.Strategy.Current;
+            if (strategy == SquadStrategy.None) return 1f;
+
+            // Get squad position index for this unit
+            int idx = 0, count = 0;
+            var units = HuntDirector.AllUnits;
+            for (int i = 0; i < units.Count; i++)
+            {
+                if (units[i] == null || units[i].squadID != unit.squadID) continue;
+                if (units[i] == unit) idx = count;
+                count++;
+            }
+
+            var mod = StrategyCostModifier.For(strategy, idx);
+            return actionType switch
+            {
+                "advance" => mod.Advance,
+                "flank" => mod.Flank,
+                "suppress" => mod.Suppress,
+                "cover" => mod.TakeCover,
+                "highground" => mod.HighGround,
+                "withdraw" => mod.Withdraw,
+                _ => 1f,
+            };
+        }
+
         protected void FireAt(StealthHuntAI unit, Vector3 targetPos)
         {
             if (_cachedShootable == null)

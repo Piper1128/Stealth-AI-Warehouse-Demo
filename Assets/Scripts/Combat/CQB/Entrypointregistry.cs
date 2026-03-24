@@ -119,25 +119,34 @@ namespace StealthHuntAI.Combat.CQB
         ///   3. Are within reach of the unit
         /// </summary>
         public static EntryPoint FindBest(Vector3 unitPos, Vector3 threatPos,
-                                           float maxDist = 12f)
+                                           float maxDist = 999f)
         {
             EntryPoint best = null;
             float bestScore = float.MinValue;
 
-            var candidates = GetCellCandidates(unitPos);
+            // Search near threat position -- we want the door closest to where player is
+            var candidates = GetCellCandidates(threatPos);
+
+            // Also check near unit in case no entries near threat
+            var unitCandidates = GetCellCandidates(unitPos);
+            foreach (var ep in unitCandidates)
+                if (!candidates.Contains(ep))
+                    candidates.Add(ep);
+
             for (int i = 0; i < candidates.Count; i++)
             {
                 var ep = candidates[i];
                 if (!ep.isBreachable) continue;
                 if (ep.IsOccupied) continue;
 
-                float distUnit = ep.DistToStack(unitPos);
                 float distThreat = Vector3.Distance(ep.transform.position, threatPos);
+                float distUnit = ep.DistToStack(unitPos);
 
-                if (distUnit > maxDist) continue;
+                // Entry must be reasonably close to threat
+                if (distThreat > 20f) continue;
 
-                // Score: close to unit, threat on the other side of door
-                float score = -distUnit * 0.6f - distThreat * 0.4f;
+                // Score: primarily close to threat, secondarily reachable by unit
+                float score = -distThreat * 0.7f - distUnit * 0.3f;
 
                 // Bonus if entry faces toward threat
                 Vector3 toThreat = (threatPos - ep.transform.position).normalized;
