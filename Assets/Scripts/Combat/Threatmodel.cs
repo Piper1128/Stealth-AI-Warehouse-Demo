@@ -23,7 +23,7 @@ namespace StealthHuntAI.Combat
         public float LastSeenTime { get; private set; } = -999f;
 
         /// <summary>Seconds since guard last saw player.</summary>
-        public float TimeSinceSeen => Time.time - LastSeenTime;
+        public float TimeSinceSeen => LastSeenTime < 0f ? 0f : Time.time - LastSeenTime;
 
         /// <summary>True when guard currently has line of sight to player.</summary>
         public bool HasLOS { get; private set; }
@@ -50,7 +50,7 @@ namespace StealthHuntAI.Combat
         // ---------- Settings -------------------------------------------------
 
         /// <summary>Seconds for confidence to decay from 1 to 0 after losing sight.</summary>
-        public float ConfidenceDecayTime = 15f;
+        public float ConfidenceDecayTime = 8f;
 
         /// <summary>How far extrapolation is trusted. Beyond this, confidence drops faster.</summary>
         public float MaxExtrapolationDist = 20f;
@@ -88,7 +88,12 @@ namespace StealthHuntAI.Combat
                     (extrapolated - LastKnownPosition).normalized * MaxExtrapolationDist;
             }
 
-            EstimatedPosition = extrapolated;
+            // Sample onto NavMesh -- prevents estimated position inside walls
+            if (UnityEngine.AI.NavMesh.SamplePosition(extrapolated, out var hit,
+                3f, UnityEngine.AI.NavMesh.AllAreas))
+                EstimatedPosition = hit.position;
+            else
+                EstimatedPosition = LastKnownPosition; // fallback to last known
 
             // Confidence decays over time
             Confidence = Mathf.Clamp01(1f - elapsed / ConfidenceDecayTime);
@@ -100,15 +105,23 @@ namespace StealthHuntAI.Combat
         /// </summary>
         public void ReceiveIntel(Vector3 position, Vector3 velocity, float confidence)
         {
+            // Cap shared intel confidence -- guards know general area but not exact position
+            // Prevents wallhack feel where guards track you through walls perfectly
+            confidence = Mathf.Min(confidence, 0.7f);
+
             if (confidence <= Confidence * 0.5f) return;
 
-            // Blend toward new intel
+            // Add position noise proportional to distance -- further intel is less precise
+            Vector3 noise = UnityEngine.Random.insideUnitSphere * 2f;
+            noise.y = 0f;
+            position += noise;
+
             float blend = confidence / (confidence + Confidence);
             EstimatedPosition = Vector3.Lerp(EstimatedPosition, position, blend);
             LastKnownVelocity = Vector3.Lerp(LastKnownVelocity, velocity, blend);
             Confidence = Mathf.Max(Confidence, confidence * 0.9f);
 
-            // Update last known if significantly more confident
+            // Only update LastKnownPosition from direct sight (handled in UpdateWithSight)
             if (confidence > 0.8f)
             {
                 LastKnownPosition = position;
@@ -124,6 +137,13 @@ namespace StealthHuntAI.Combat
             HasLOS = false;
             EstimatedPosition = Vector3.zero;
             LastKnownVelocity = Vector3.zero;
+        }
+
+        /// <summary>Call when entering combat -- prevents stale TimeSinceSeen on first frame.</summary>
+        public void OnEnterCombat()
+        {
+            if (LastSeenTime < 0f)
+                LastSeenTime = Time.time;
         }
 
         // ---------- Search cone ----------------------------------------------

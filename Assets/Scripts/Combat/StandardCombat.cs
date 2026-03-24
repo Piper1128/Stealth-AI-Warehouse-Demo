@@ -27,7 +27,7 @@ namespace StealthHuntAI.Combat
         public CoverWeights weights = new CoverWeights();
 
         [Header("Performance")]
-        [Range(0.1f, 4f)] public float ReplanInterval = 0.6f;
+        [Range(0.1f, 4f)] public float ReplanInterval = 1.0f;
         private float _replanOffset; // stagger offset so guards dont all replan same frame
         [Range(5f, 40f)] public float CoverSearchRange = 25f;
 
@@ -58,6 +58,7 @@ namespace StealthHuntAI.Combat
             _brain.RegisterMember(ai);
             _events = CombatEventBus.Get(ai);
             _threat = new ThreatModel();
+            _threat.OnEnterCombat(); // prevent stale TimeSinceSeen on first frame
             _planner = new GoapPlanner();
             BuildActions();
             EnsureDefaultSlots();
@@ -94,6 +95,14 @@ namespace StealthHuntAI.Combat
             ProcessEvents();
             CheckStuck();
 
+            // Clear blocked cells periodically -- walls may have changed
+            _blockedClearTimer += Time.deltaTime;
+            if (_blockedClearTimer > BlockedClearInterval)
+            {
+                _blockedCells.Clear();
+                _blockedClearTimer = 0f;
+            }
+
             // Update squad strategy
             if (_ai.squadID == GetSquadLeaderID())
             {
@@ -101,14 +110,32 @@ namespace StealthHuntAI.Combat
                 _brain.Strategy.Update(Time.deltaTime, ws, _brain);
             }
 
-            // Evaluate CQB entry when near a door and threat inside
-            if (!_brain.CQB.IsActive && _threat.HasIntel)
+            // Tick CQB -- handles global timeout
+            _brain.CQB.Tick(Time.deltaTime);
+
+            // End CQB when room is cleared
+            if (_brain.CQB.IsActive && _brain.CQB.RoomCleared)
+                _brain.CQB.EndEntry();
+
+            // Only squad leader evaluates CQB -- prevents race condition
+            if (!_brain.CQB.IsActive && _threat.HasIntel
+             && _ai.GetInstanceID() == GetSquadLeaderID())
             {
+                // Sort members by distance to nearest EntryPoint
                 var members = new System.Collections.Generic.List<StealthHuntAI>();
                 var allUnits = HuntDirector.AllUnits;
                 for (int i = 0; i < allUnits.Count; i++)
-                    if (allUnits[i] != null && allUnits[i].squadID == _ai.squadID)
+                    if (allUnits[i] != null
+                     && allUnits[i].squadID == _ai.squadID
+                     && !allUnits[i].IsDead)
                         members.Add(allUnits[i]);
+
+                // Sort closest to threat first -- they breach, further ones hold
+                members.Sort((a, b) =>
+                    Vector3.Distance(a.transform.position, _threat.EstimatedPosition)
+                    .CompareTo(
+                    Vector3.Distance(b.transform.position, _threat.EstimatedPosition)));
+
                 _brain.CQB.EvaluateEntry(
                     _ai.transform.position,
                     _threat.EstimatedPosition,
@@ -120,6 +147,16 @@ namespace StealthHuntAI.Combat
             if (_replanTimer >= ReplanInterval + _replanOffset
              || _plan == null || _plan.IsComplete)
                 RequestReplan();
+
+            // Check stale intel BEFORE executing -- catches Idle state too
+            bool staleIntel = (_threat.Confidence < 0.1f || _threat.TimeSinceSeen > 30f)
+                           && !(_currentAction is SearchAction)
+                           && !(_currentAction is TakeCoverAction);
+            if (staleIntel)
+            {
+                YieldToCore();
+                return;
+            }
 
             ExecuteCurrentAction();
 
@@ -149,6 +186,9 @@ namespace StealthHuntAI.Combat
         private List<GoapAction> _actions = new List<GoapAction>();
         private float _goalTimer;
         private float _replanTimer;
+        private readonly HashSet<Vector3Int> _blockedCells = new HashSet<Vector3Int>();
+        private float _blockedClearTimer;
+        private const float BlockedClearInterval = 8f;
         private CoverPoint _currentCover;
 
         // ---------- Threat ---------------------------------------------------
@@ -209,24 +249,36 @@ namespace StealthHuntAI.Combat
 
             if (newPlan != null && newPlan.IsValid)
             {
-                // Only switch if new plan is meaningfully different
-                if (_plan == null || _plan.IsComplete
-                    || _currentAction?.Name != newPlan.Current?.Name)
+                bool sameAction = _currentAction?.Name == newPlan.Current?.Name;
+                bool planDone = _plan == null || _plan.IsComplete;
+
+                if (!sameAction || planDone)
                 {
-                    _currentAction?.OnExit(_ai);
+                    // Different action -- smooth handoff
+                    // Only call OnExit if switching to genuinely different action
+                    if (!sameAction) _currentAction?.OnExit(_ai);
                     _plan = newPlan;
                     _currentAction = _plan.Current;
-                    _currentAction?.OnEnter(_ai, _threat);
+                    if (!sameAction) _currentAction?.OnEnter(_ai, _threat);
                     _goalTimer = 0f;
+                }
+                else
+                {
+                    // Same action -- just update the plan reference silently
+                    _plan = newPlan;
                 }
             }
             else if (_plan == null || _plan.IsComplete)
             {
                 if (_threat.HasIntel && _threat.Confidence >= 0.1f)
                 {
-                    _currentAction?.OnExit(_ai);
-                    _currentAction = new AdvanceAggressivelyAction();
-                    _currentAction.OnEnter(_ai, _threat);
+                    // Only restart if not already advancing -- prevents Idle loop
+                    if (!(_currentAction is AdvanceAggressivelyAction))
+                    {
+                        _currentAction?.OnExit(_ai);
+                        _currentAction = new AdvanceAggressivelyAction();
+                        _currentAction.OnEnter(_ai, _threat);
+                    }
                 }
                 else
                 {
@@ -293,26 +345,16 @@ namespace StealthHuntAI.Combat
             }
 
             // Force replan on significant world state changes
-            // Yield threshold -- keep fighting until confidence is very low
-            // Yield to Core when intel is very stale
-            bool noIntel = _threat.Confidence < 0.1f
-                            && !(_currentAction is SearchAction)
-                            && !(_currentAction is TakeCoverAction);
             bool gotLOS = _threat.HasLOS && _currentAction is SearchAction;
+            var ws = WorldState.Build(_ai, _threat, _brain);
             bool shouldWithdraw = _currentAction is not WithdrawAction
-                && (WorldState.Build(_ai, _threat, _brain).SquadStrength < 0.25f
-                    || WorldState.Build(_ai, _threat, _brain).Health < 0.2f);
+                && (ws.SquadStrength < 0.25f || ws.Health < 0.2f);
 
             if (gotLOS || shouldWithdraw)
             {
                 _currentAction?.OnExit(_ai);
                 _currentAction = null;
                 RequestReplan();
-            }
-            else if (noIntel)
-            {
-                // No intel -- yield to Core search instead of replanning
-                YieldToCore();
             }
         }
 
@@ -428,18 +470,26 @@ namespace StealthHuntAI.Combat
             _stuckTimer += Time.deltaTime;
             if (_stuckTimer > 2f)
             {
-                // Stuck -- invalidate action and let planner choose new destination
-                // Do NOT warp -- warping to random position causes wall clipping
+                // Stuck -- blacklist current destination so planner avoids it
+                var dest = agent.destination;
+                _blockedCells.Add(WorldToCell(dest));
+
                 _currentAction?.OnExit(_ai);
                 _currentAction = null;
                 _plan = null;
                 _stuckTimer = 0f;
                 _lastStuckPos = _ai.transform.position;
-
-                // Stop agent cleanly
                 agent.ResetPath();
             }
         }
+
+        private static Vector3Int WorldToCell(Vector3 p)
+            => new Vector3Int(Mathf.RoundToInt(p.x / 2f),
+                              Mathf.RoundToInt(p.y / 2f),
+                              Mathf.RoundToInt(p.z / 2f));
+
+        public bool IsDestinationBlocked(Vector3 dest)
+            => _blockedCells.Contains(WorldToCell(dest));
 
         private int GetSquadLeaderID()
         {

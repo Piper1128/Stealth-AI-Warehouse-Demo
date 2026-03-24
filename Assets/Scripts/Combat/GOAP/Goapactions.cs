@@ -97,7 +97,8 @@ namespace StealthHuntAI.Combat
             Vector3 target = GetBestKnownPosition(unit, threat);
             FaceToward(unit, target, 200f);
 
-            if (_phaseTimer >= 0.5f && threat.Confidence > 0.05f)
+            // Shoot immediately on arrival, then again after 0.3s
+            if (_phaseTimer >= 0.3f && threat.Confidence > 0.05f)
             {
                 FireAt(unit, target);
                 _shotsFired++;
@@ -193,6 +194,8 @@ namespace StealthHuntAI.Combat
         {
             float base_cost = 1f + (1f - s.ThreatConfidence) * 1.5f
                             + (s.SquadStrength < 0.5f ? 1f : 0f);
+            // Heavy penalty if squadmate already advancing -- avoid rush
+            if (s.SquadmateAdvancing) base_cost += 2.5f;
             return base_cost;
         }
 
@@ -201,7 +204,24 @@ namespace StealthHuntAI.Combat
             _suppressTimer = 0f;
             _pathCheckTimer = 0f;
             _lastPathValid = true;
+
+            // Stagger advance -- if squad member already advancing, wait
+            _startDelay = 0f;
+            var units = HuntDirector.AllUnits;
+            for (int i = 0; i < units.Count; i++)
+            {
+                var u = units[i];
+                if (u == null || u == unit || u.squadID != unit.squadID) continue;
+                var sc = u.GetComponent<StandardCombat>();
+                if (sc != null && sc.CurrentStateName == "AdvanceAggressively")
+                {
+                    _startDelay = UnityEngine.Random.Range(1.0f, 2.5f);
+                    break;
+                }
+            }
         }
+
+        private float _startDelay;
 
         public override bool Execute(StealthHuntAI unit, ThreatModel threat,
                                       TacticalBrain brain, float dt)
@@ -253,6 +273,16 @@ namespace StealthHuntAI.Combat
             // Abort on stale intel -- dont advance toward 12s old position
             if (threat.Confidence < 0.1f || threat.TimeSinceSeen > 12f) return true;
 
+            // Start delay -- wait if squad member already advancing
+            if (_startDelay > 0f)
+            {
+                _startDelay -= dt;
+                unit.CombatStop();
+                // Peek toward threat while waiting
+                unit.CombatFaceToward(threat.EstimatedPosition, 80f);
+                return false;
+            }
+
             // Movement handled above by TacticalPathfinder.FollowWaypoints
             unit.CombatRestoreRotation();
 
@@ -266,10 +296,20 @@ namespace StealthHuntAI.Combat
             }
             else
             {
+                // Suppression fire -- only if path to target isnt fully blocked
                 _suppressTimer += dt;
                 if (_suppressTimer > 1.2f && threat.Confidence > 0.2f)
                 {
-                    FireAt(unit, GetBestKnownPosition(unit, threat));
+                    Vector3 suppressTarget = GetBestKnownPosition(unit, threat);
+                    Vector3 toTarget = suppressTarget - unit.transform.position;
+                    // Only suppress if not completely walled off
+                    if (!Physics.Raycast(
+                        unit.transform.position + Vector3.up * 1.5f,
+                        toTarget.normalized, toTarget.magnitude * 0.5f,
+                        LayerMask.GetMask("Default", "Environment")))
+                    {
+                        FireAt(unit, suppressTarget);
+                    }
                     _suppressTimer = 0f;
                 }
             }
@@ -355,8 +395,7 @@ namespace StealthHuntAI.Combat
 
             if (threat.HasLOS)
             {
-                // Got LOS while flanking -- stop and shoot immediately
-                unit.CombatStop();
+                // Got LOS while flanking -- shoot but keep moving
                 unit.CombatFaceToward(fireTarget, 400f);
                 FireAt(unit, fireTarget);
                 _suppressTimer = 0f;
@@ -503,7 +542,8 @@ namespace StealthHuntAI.Combat
 
             Vector3 holdTarget = GetBestKnownPosition(unit, threat);
             FaceToward(unit, holdTarget);
-            if (threat.HasLOS || threat.Confidence > 0.1f)
+            // Only shoot with direct LOS -- never through walls
+            if (threat.HasLOS)
                 FireAt(unit, holdTarget);
 
             // Abandon hold if threat gets too close or squad recovers

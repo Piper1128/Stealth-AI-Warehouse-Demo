@@ -156,10 +156,10 @@ namespace StealthHuntAI
 
         [Tooltip("Speed multiplier when patrolling or guarding. " +
                  "Applied on top of base speed. 0.5 = half speed patrol.")]
-        [Range(0.1f, 1f)] public float patrolSpeedMultiplier = 0.55f;
+        [Range(0.1f, 1f)] public float patrolSpeedMultiplier = 0.65f;
 
         [Tooltip("Speed multiplier when actively pursuing or searching hostile.")]
-        [Range(0.5f, 2f)] public float chaseSpeedMultiplier = 1.0f;
+        [Range(0.5f, 2f)] public float chaseSpeedMultiplier = 1.4f;
 
         [Tooltip("Patrol waypoints. Leave empty to auto-generate patrol around spawn position.")]
         public Transform[] patrolPoints;

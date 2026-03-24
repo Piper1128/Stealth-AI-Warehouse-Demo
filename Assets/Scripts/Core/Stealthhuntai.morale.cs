@@ -124,9 +124,9 @@ namespace StealthHuntAI
             // so ApplyMoraleModifiers always scales from a clean base
             switch (personality)
             {
-                case Personality.Cautious: return 2.5f;
-                case Personality.Aggressive: return 4.5f;
-                default: return 3.5f;
+                case Personality.Cautious: return 3.5f;
+                case Personality.Aggressive: return 6.0f;
+                default: return 4.5f;
             }
         }
 

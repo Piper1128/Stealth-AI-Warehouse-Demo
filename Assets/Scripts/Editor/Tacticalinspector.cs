@@ -28,8 +28,18 @@ namespace StealthHuntAI.Editor
         private bool _followCam;
         private bool _showGizmos = true;
         private bool _showHeat;
-        private readonly List<string> _feed = new List<string>();
+        private readonly List<(double time, string msg, Color col)> _feed
+            = new List<(double, string, Color)>();
         private double _lastFeedTime;
+
+        // Static log -- call from anywhere to push events to feed
+        public static void Log(string msg, Color col = default)
+        {
+            if (col == default) col = Color.white;
+            var win = GetWindow<TacticalInspector>();
+            win._feed.Add((EditorApplication.timeSinceStartup, msg, col));
+            if (win._feed.Count > 60) win._feed.RemoveAt(0);
+        }
 
         private static readonly string[] TabLabels = { "Unit", "Squad", "Scorers", "Feed" };
 
@@ -388,37 +398,100 @@ namespace StealthHuntAI.Editor
 
         private void DrawFeedTab()
         {
+            // Pull tactical spot requests
             if (_sys != null && _sys.LastRequest != null)
             {
                 var req = _sys.LastRequest;
                 if (req.IsComplete)
                 {
-                    string entry = "[" + req.Context.Unit?.name + "] "
+                    string entry = "[" + req.Context.Unit?.name + "] cover: "
                         + (req.BestSpot?.ProviderTag ?? "none")
-                        + " score=" + (req.BestSpot?.Score.ToString("F2") ?? "0")
+                        + " s=" + (req.BestSpot?.Score.ToString("F2") ?? "0")
                         + " (" + req.ElapsedMs.ToString("F1") + "ms)";
-
-                    if (_feed.Count == 0 || _feed[_feed.Count - 1] != entry)
-                        _feed.Add(entry);
-
-                    if (_feed.Count > 40) _feed.RemoveAt(0);
+                    var last = _feed.Count > 0 ? _feed[_feed.Count - 1].msg : "";
+                    if (last != entry)
+                        _feed.Add((EditorApplication.timeSinceStartup, entry,
+                            new Color(0.6f, 0.9f, 1f)));
+                    if (_feed.Count > 60) _feed.RemoveAt(0);
                 }
             }
 
-            DrawSection("Intel Feed (" + _feed.Count + " entries)", () =>
+            // Poll selected unit for state changes
+            if (_selected != null && Application.isPlaying)
+            {
+                var sc = _selected.GetComponent<Combat.StandardCombat>();
+                PollUnitEvents(_selected, sc);
+            }
+
+            DrawSection("Event Feed (" + _feed.Count + ")", () =>
             {
                 if (_feed.Count == 0)
                 {
-                    EditorGUILayout.LabelField("Waiting for requests...", EditorStyles.miniLabel);
+                    EditorGUILayout.LabelField("No events yet -- enter play mode",
+                        EditorStyles.miniLabel);
                     return;
                 }
 
-                for (int i = _feed.Count - 1; i >= Mathf.Max(0, _feed.Count - 20); i--)
-                    EditorGUILayout.LabelField(_feed[i], EditorStyles.miniLabel);
+                double now = EditorApplication.timeSinceStartup;
+                for (int i = _feed.Count - 1; i >= Mathf.Max(0, _feed.Count - 30); i--)
+                {
+                    var (t, msg, col) = _feed[i];
+                    float age = (float)(now - t);
+                    float alpha = Mathf.Clamp01(1f - age / 30f);
+                    GUI.color = new Color(col.r, col.g, col.b, alpha);
+                    EditorGUILayout.LabelField(
+                        $"+{age:F1}s  {msg}", EditorStyles.miniLabel);
+                }
+                GUI.color = Color.white;
             });
 
             if (GUILayout.Button("Clear Feed"))
                 _feed.Clear();
+        }
+
+        // ---------- Event polling ----------------------------------------
+
+        private AlertState _lastAlertState;
+        private string _lastAction;
+        private string _lastPlan;
+
+        private void PollUnitEvents(StealthHuntAI unit, Combat.StandardCombat sc)
+        {
+            // Alert state change
+            if (unit.CurrentAlertState != _lastAlertState)
+            {
+                Color col = unit.CurrentAlertState switch
+                {
+                    AlertState.Hostile => new Color(1f, 0.3f, 0.3f),
+                    AlertState.Suspicious => new Color(1f, 0.85f, 0.1f),
+                    _ => new Color(0.5f, 1f, 0.5f),
+                };
+                _feed.Add((EditorApplication.timeSinceStartup,
+                    $"[{unit.name}] {_lastAlertState} ? {unit.CurrentAlertState}", col));
+                _lastAlertState = unit.CurrentAlertState;
+            }
+
+            if (sc == null) return;
+
+            // Action change
+            if (sc.CurrentStateName != _lastAction)
+            {
+                _feed.Add((EditorApplication.timeSinceStartup,
+                    $"[{unit.name}] action: {sc.CurrentStateName}",
+                    new Color(0.8f, 0.8f, 1f)));
+                _lastAction = sc.CurrentStateName;
+            }
+
+            // Plan change
+            if (sc.CurrentPlanName != _lastPlan && sc.CurrentPlanName != "none")
+            {
+                _feed.Add((EditorApplication.timeSinceStartup,
+                    $"[{unit.name}] plan: {sc.CurrentPlanName}",
+                    new Color(0.6f, 1f, 0.8f)));
+                _lastPlan = sc.CurrentPlanName;
+            }
+
+            if (_feed.Count > 60) _feed.RemoveAt(0);
         }
 
         // ---------- Controls -------------------------------------------------

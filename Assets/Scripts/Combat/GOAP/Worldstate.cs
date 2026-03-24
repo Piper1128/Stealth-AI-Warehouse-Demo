@@ -144,8 +144,13 @@ namespace StealthHuntAI.Combat
 
         private static bool CheckNearEntryPoint(StealthHuntAI unit)
         {
+            // If CQB is active for this squad -- all guards can Stack
+            var brain = TacticalBrain.GetOrCreate(unit.squadID);
+            if (brain.CQB.IsActive) return true;
+
+            // Otherwise check proximity to nearest entry point
             var ep = EntryPointRegistry.FindNearest(unit.transform.position, unit);
-            return ep != null && ep.DistToStack(unit.transform.position) < 5f;
+            return ep != null && ep.DistToStack(unit.transform.position) < 12f;
         }
 
         private static bool CheckHighGroundNearby(StealthHuntAI unit)

@@ -47,15 +47,23 @@ namespace StealthHuntAI.Combat.CQB
         public void SignalStackReady(StealthHuntAI unit)
         {
             var role = GetRole(unit);
-            if (role == null) return;
+            if (role == null)
+            {
+                // No role assigned -- treat as both to unblock
+                _breacherReady = true;
+                _followerReady = true;
+                return;
+            }
             if (role.Value.IsBreacher) _breacherReady = true;
             if (role.Value.IsFollower) _followerReady = true;
+            if (role.Value.IsHolder) _followerReady = true; // holder counts as follower
         }
 
         public void SignalRoomCleared(StealthHuntAI unit)
             => _roomCleared = true;
 
-        public bool BothReady => _breacherReady && _followerReady;
+        public bool BothReady => _breacherReady
+            && (_followerReady || CurrentEntry == EntryType.Suppress);
         public bool BreacherReady => _breacherReady;
         public bool RoomCleared => _roomCleared;
 
@@ -77,7 +85,7 @@ namespace StealthHuntAI.Combat.CQB
             if (ep == null) { IsActive = false; return false; }
 
             float distEpToThreat = Vector3.Distance(ep.transform.position, threatPos);
-            if (distEpToThreat > 8f) { IsActive = false; return false; }
+            if (distEpToThreat > 20f) { IsActive = false; return false; }
 
             ActiveEntry = ep;
             ep.Occupy(squadMembers.Count > 0 ? squadMembers[0] : null);
@@ -91,6 +99,7 @@ namespace StealthHuntAI.Combat.CQB
             _breacherReady = false;
             _followerReady = false;
             _roomCleared = false;
+            _cqbTimer = 0f;
 
             return true;
         }
@@ -161,6 +170,22 @@ namespace StealthHuntAI.Combat.CQB
             for (int i = 0; i < _roles.Count; i++)
                 if (_roles[i].Unit == unit) return _roles[i];
             return null;
+        }
+
+        // ---------- Global timeout ------------------------------------------
+
+        private float _cqbTimer;
+        private const float MaxCQBDuration = 20f;
+
+        public void Tick(float dt)
+        {
+            if (!IsActive) return;
+            _cqbTimer += dt;
+            if (_cqbTimer > MaxCQBDuration)
+            {
+                Debug.Log("[CQB] Timeout -- ending entry");
+                EndEntry();
+            }
         }
 
         public bool IsBreacher(StealthHuntAI unit)

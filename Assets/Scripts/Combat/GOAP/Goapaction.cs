@@ -76,6 +76,14 @@ namespace StealthHuntAI.Combat
         {
             if (_cachedShootable == null)
                 _cachedShootable = unit.GetComponent<IShootable>();
+
+            // LOS check before firing -- never shoot through walls
+            Vector3 origin = unit.transform.position + Vector3.up * 1.5f;
+            Vector3 toTarget = targetPos + Vector3.up * 0.8f - origin;
+            if (Physics.Raycast(origin, toTarget.normalized, toTarget.magnitude - 0.3f,
+                LayerMask.GetMask("Default", "Environment")))
+                return; // blocked
+
             _cachedShootable?.TryShoot(targetPos);
         }
 
@@ -118,8 +126,11 @@ namespace StealthHuntAI.Combat
 
         protected bool MoveTo(StealthHuntAI unit, Vector3 dest)
         {
-            // Only update destination when it changes significantly
-            // Prevents resetting NavMesh path every frame
+            // Skip blocked destinations -- guard was stuck here before
+            var sc = unit.GetComponent<StandardCombat>();
+            if (sc != null && sc.IsDestinationBlocked(dest))
+                return true; // treat as arrived so action picks new dest
+
             float destDelta = Vector3.Distance(dest, _lastDest);
             if (destDelta > DestChangeThreshold || _lastDest == Vector3.zero)
             {
@@ -128,7 +139,7 @@ namespace StealthHuntAI.Combat
             }
             unit.CombatRestoreRotation();
             float dist = Vector3.Distance(unit.transform.position, dest);
-            return dist < 2f;
+            return dist < 0.8f;
         }
 
         protected void ResetMoveDest() => _lastDest = Vector3.zero;

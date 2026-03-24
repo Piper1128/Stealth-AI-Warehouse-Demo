@@ -130,42 +130,125 @@ namespace StealthHuntAI.Combat
             var corners = path.corners;
             if (corners.Length < 2) return null;
 
+            float totalDist = Vector3.Distance(from, to);
             var waypoints = new List<Vector3>();
             var squadUnits = HuntDirector.AllUnits;
 
-            // Evaluate each corner -- skip exposed ones for flank/withdraw
-            for (int i = 1; i < corners.Length; i++)
+            // --- Cover-to-cover routing ---
+            // Sample positions along the route and find covered ones
+            // This gives us a cover-hugging path rather than a straight line
             {
-                Vector3 wp = corners[i];
+                var candidates = new List<(float t, Vector3 pos)>();
+                int steps = Mathf.Clamp(Mathf.RoundToInt(totalDist / 4f), 2, 8);
 
-                // Skip waypoints exposed to threat (for flank and withdraw)
-                if (mode != WaypointMode.Advance)
+                for (int s = 1; s < steps; s++)
                 {
-                    if (IsExposedToThreat(wp, threatPos))
+                    float pct = (float)s / steps;
+                    Vector3 sample = Vector3.Lerp(from, to, pct);
+
+                    // Sample 8 directions at this point -- find one with cover
+                    float[] angles = { 0, 45, 90, 135, 180, 225, 270, 315 };
+                    float[] radii = { 2f, 4f, 6f };
+
+                    foreach (float r in radii)
+                        foreach (float a in angles)
+                        {
+                            Vector3 candidate = sample
+                                + Quaternion.Euler(0, a, 0) * Vector3.forward * r;
+
+                            if (!NavMesh.SamplePosition(candidate, out var hit, 1f,
+                                NavMesh.AllAreas)) continue;
+
+                            Vector3 cp = hit.position;
+
+                            // Must have cover from threat
+                            if (IsExposedToThreat(cp, threatPos)) continue;
+
+                            // Must not stray too far from route
+                            if (DistanceToSegment(cp, from, to) > 8f) continue;
+
+                            float t2 = Vector3.Dot(cp - from, (to - from).normalized)
+                                     / Mathf.Max(totalDist, 0.1f);
+                            if (t2 < 0.05f || t2 > 0.95f) continue;
+
+                            candidates.Add((t2, cp));
+                            goto nextStep; // one good point per step is enough
+                        }
+                    nextStep:;
+                }
+
+                candidates.Sort((a, b) => a.t.CompareTo(b.t));
+
+                // Deduplicate -- skip points too close together
+                Vector3 lastAdded = from;
+                foreach (var (_, pos) in candidates)
+                {
+                    if (Vector3.Distance(pos, lastAdded) < 2.5f) continue;
+
+                    bool tooClose = false;
+                    for (int j = 0; j < squadUnits.Count; j++)
                     {
-                        // Try to find a nearby safe alternative
+                        var u = squadUnits[j];
+                        if (u == null || u == unit || u.squadID != squadID) continue;
+                        if (Vector3.Distance(pos, u.transform.position) < 1.5f)
+                        { tooClose = true; break; }
+                    }
+                    if (tooClose) continue;
+
+                    waypoints.Add(pos);
+                    lastAdded = pos;
+                }
+            }
+
+            // --- Fallback to NavMesh corners if no cover found ---
+            if (waypoints.Count == 0)
+            {
+                for (int i = 1; i < corners.Length; i++)
+                {
+                    Vector3 wp = corners[i];
+
+                    if (mode != WaypointMode.Advance && IsExposedToThreat(wp, threatPos))
+                    {
                         Vector3? safe = FindSafeAlternative(wp, threatPos);
-                        if (safe == null) return null; // route is not safe
+                        if (safe == null) continue;
                         wp = safe.Value;
                     }
-                }
 
-                // Skip waypoints too close to squad members
-                bool tooClose = false;
-                for (int j = 0; j < squadUnits.Count; j++)
-                {
-                    var u = squadUnits[j];
-                    if (u == null || u == unit || u.squadID != squadID) continue;
-                    if (Vector3.Distance(wp, u.transform.position) < 1.5f)
-                    { tooClose = true; break; }
-                }
-                if (tooClose) continue;
+                    bool tooClose = false;
+                    for (int j = 0; j < squadUnits.Count; j++)
+                    {
+                        var u = squadUnits[j];
+                        if (u == null || u == unit || u.squadID != squadID) continue;
+                        if (Vector3.Distance(wp, u.transform.position) < 1.5f)
+                        { tooClose = true; break; }
+                    }
+                    if (tooClose) continue;
 
-                waypoints.Add(wp);
+                    var testPath = new NavMeshPath();
+                    if (!NavMesh.CalculatePath(unit.transform.position, wp,
+                        NavMesh.AllAreas, testPath)
+                     || testPath.status != NavMeshPathStatus.PathComplete)
+                        continue;
+
+                    waypoints.Add(wp);
+                }
             }
+
+            // Always add final destination
+            waypoints.Add(to);
 
             return waypoints.Count > 0 ? waypoints : null;
         }
+
+        // ---------- Geometry helpers -----------------------------------------
+
+        private static float DistanceToSegment(Vector3 point, Vector3 a, Vector3 b)
+        {
+            Vector3 ab = b - a;
+            float t = Mathf.Clamp01(Vector3.Dot(point - a, ab) / ab.sqrMagnitude);
+            return Vector3.Distance(point, a + t * ab);
+        }
+
 
         // ---------- Safety checks --------------------------------------------
 

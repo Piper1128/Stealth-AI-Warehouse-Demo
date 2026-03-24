@@ -1540,8 +1540,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::StealthHuntAI.Demo.GuardWeapon
   damage: 30
   penetration: 0.4
-  shootRange: 20
-  accuracy: 0.97
+  shootRange: 60
+  accuracy: 0.85
   fireRate: 0.4
   burstCount: 3
   burstDelay: 0.1
@@ -1553,6 +1553,8 @@ MonoBehaviour:
   shootLayers:
     serializedVersion: 2
     m_Bits: 960
+  aimInTime: 0.7
+  aimInSpreadMax: 0.3
 --- !u!114 &4122779359751285265
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1566,10 +1568,10 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::StealthHuntAI.StealthHuntAI
   preset: {fileID: 0}
-  sightRange: 40
+  sightRange: 60
   sightAngle: 120
-  hearingRange: 20
-  sightDetectionSpeed: 2
+  hearingRange: 40
+  sightDetectionSpeed: 1.5
   sightDecaySpeed: 0.2
   suspicionThreshold: 0.15
   hostileThreshold: 0.7
@@ -1680,18 +1682,18 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f96c91391b40d5242a67b9b60f29c28d, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::StealthHuntAI.AwarenessSensor
-  sightRange: 20
+  sightRange: 60
   sightAngle: 120
   peripheralRange: 5
   sightCheckPoints: 3
   sightCheckSpread: 0.4
   sightFollowHeadBone: 1
-  reactionTime: 0.1
-  sightRiseSpeed: 2
+  reactionTime: 0.05
+  sightRiseSpeed: 3
   sightDecaySpeed: 0.1
-  hearingRange: 20
+  hearingRange: 40
   hearingRiseSpeed: 3
-  soundSuspicionThreshold: 0.4
+  soundSuspicionThreshold: 0.01
   soundHostileThreshold: 1
   useLightDetection: 1
   darknessThreshold: 0.3
@@ -1718,14 +1720,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 70102b6f06b145e4ba24a32e083e33f3, type: 3}
   m_Name: 
   m_EditorClassIdentifier: StealthHuntAI.Combat::StealthHuntAI.Combat.StandardCombat
-  advanceStopDistance: 7
-  coverWaitTime: 1.5
-  peekDuration: 1
-  repositionThreshold: 3
-  suppressionRange: 30
-  suppressionDuration: 2.5
-  coverSearchRange: 5
-  coverArrivalThreshold: 1.2
   weights:
     protection: 1
     proximity: 0.8
@@ -1735,6 +1729,8 @@ MonoBehaviour:
     pathPredict: 0.6
     heatPenalty: 0.8
     novelty: 0.4
+  ReplanInterval: 1.5
+  CoverSearchRange: 25
   animSlots:
   - trigger: 0
     clips:

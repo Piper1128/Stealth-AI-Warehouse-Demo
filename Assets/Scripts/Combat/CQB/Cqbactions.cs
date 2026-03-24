@@ -122,7 +122,12 @@ namespace StealthHuntAI.Combat
             var role = brain.CQB.GetRole(unit);
             if (!role.HasValue) return;
 
-            _domTarget = role.Value.DomTarget;
+            Vector3 raw = role.Value.DomTarget;
+            if (UnityEngine.AI.NavMesh.SamplePosition(raw, out var hit, 2f,
+                UnityEngine.AI.NavMesh.AllAreas))
+                _domTarget = hit.position;
+            else
+                _domTarget = raw;
             _destSet = true;
         }
 
@@ -172,7 +177,7 @@ namespace StealthHuntAI.Combat
         private int _sweepStep;
         private Vector3 _basePos;
         private const float SweepDuration = 0.8f;
-        private const int SweepSteps = 3;
+        private const int SweepSteps = 5;
 
         public override bool CheckPreconditions(WorldState s)
             => s.AtDomPoint && !s.RoomCleared;
@@ -186,11 +191,43 @@ namespace StealthHuntAI.Combat
         public override float GetCost(WorldState s, StealthHuntAI unit)
             => 1f;
 
+        private Vector3[] _cornerDirs;
+
         public override void OnEnter(StealthHuntAI unit, ThreatModel threat)
         {
             _sweepTimer = 0f;
             _sweepStep = 0;
             _basePos = unit.transform.position;
+
+            // Build sweep directions toward room corners from DomPoint
+            // Use entry point to determine inward direction
+            var brain = TacticalBrain.GetOrCreate(unit.squadID);
+            var entry = brain.CQB.ActiveEntry;
+            if (entry != null)
+            {
+                Vector3 inward = entry.transform.forward;
+                Vector3 right = entry.transform.right;
+                _cornerDirs = new[]
+                {
+                    inward,
+                    inward + right,
+                    inward - right,
+                    -right,
+                    right,
+                };
+            }
+            else
+            {
+                // Fallback -- cardinal sweep
+                _cornerDirs = new[]
+                {
+                    unit.transform.forward,
+                    unit.transform.right,
+                    -unit.transform.right,
+                    -unit.transform.forward,
+                    unit.transform.forward + unit.transform.right,
+                };
+            }
         }
 
         public override bool Execute(StealthHuntAI unit, ThreatModel threat,
@@ -198,12 +235,9 @@ namespace StealthHuntAI.Combat
         {
             _sweepTimer += dt;
 
-            // Systematic sweep -- face different angles to check corners
-            float[] sweepAngles = { 0f, 45f, 90f, 135f, 180f };
-            int angleIdx = Mathf.Min(_sweepStep, sweepAngles.Length - 1);
-
-            Vector3 sweepDir = Quaternion.Euler(0, sweepAngles[angleIdx], 0)
-                * unit.transform.forward;
+            // Sweep toward room corners
+            int idx = Mathf.Min(_sweepStep, _cornerDirs.Length - 1);
+            Vector3 sweepDir = _cornerDirs[idx].normalized;
             unit.CombatFaceToward(unit.transform.position + sweepDir * 3f, 120f);
 
             // Engage if LOS during sweep
@@ -221,11 +255,12 @@ namespace StealthHuntAI.Combat
 
             if (_sweepStep >= SweepSteps)
             {
-                // Room cleared -- signal squad
                 brain.CQB.SignalRoomCleared(unit);
-                CombatEventBus.RaiseSquad(unit.squadID,
-                    CombatEventType.ThreatFound, unit,
-                    unit.transform.position);
+                // Only raise ThreatFound if we actually saw threat during sweep
+                if (threat.HasLOS || threat.TimeSinceSeen < 3f)
+                    CombatEventBus.RaiseSquad(unit.squadID,
+                        CombatEventType.ThreatFound, unit,
+                        threat.EstimatedPosition);
                 return true;
             }
 
@@ -309,9 +344,9 @@ namespace StealthHuntAI.Combat
                 unit.CombatFaceToward(funnelCenter, 160f);
             }
 
-            // Shoot threat if visible
-            if (threat.HasLOS || threat.Confidence > 0.3f)
-                FireAt(unit, GetBestKnownPosition(unit, threat));
+            // Shoot only with direct LOS -- dont shoot through walls
+            if (threat.HasLOS)
+                FireAt(unit, threat.EstimatedPosition);
 
             // Room cleared or timeout -- done
             return brain.CQB.RoomCleared || _holdTimer > MaxHoldTime;
