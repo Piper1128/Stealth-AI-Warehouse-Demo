@@ -53,17 +53,27 @@ namespace StealthHuntAI.Combat
         public override bool Execute(StealthHuntAI unit, ThreatModel threat,
                                       TacticalBrain brain, float dt)
         {
-            if (!_destSet) return true;
+            // If no role yet -- try to get one, fallback to nearest stack pos
+            if (!_destSet)
+            {
+                var ep = brain.CQB.ActiveEntry;
+                if (ep != null)
+                {
+                    _stackPos = Vector3.Distance(unit.transform.position, ep.StackLeftPos)
+                        < Vector3.Distance(unit.transform.position, ep.StackRightPos)
+                        ? ep.StackLeftPos : ep.StackRightPos;
+                    _destSet = true;
+                }
+                else return true;
+            }
 
             float dist = Vector3.Distance(unit.transform.position, _stackPos);
             if (dist > 0.8f)
             {
-                unit.CombatMoveTo(_stackPos);
+                unit.CombatMoveTo(_stackPos, 1.3f);
                 return false;
             }
 
-            // In position -- face door and breach after short stagger delay
-            // No waiting for buddy -- each guard breaches individually
             unit.CombatStop();
             brain.CQB.SignalStackReady(unit);
 
@@ -72,8 +82,6 @@ namespace StealthHuntAI.Combat
                     brain.CQB.ActiveEntry.transform.position, 120f);
 
             _waitTimer += dt;
-
-            // Breacher goes at 0.3s, follower at 0.6s -- small stagger prevents collision
             float breachDelay = brain.CQB.IsFollower(unit) ? 0.6f : 0.3f;
             return _waitTimer >= breachDelay;
         }
@@ -347,7 +355,9 @@ namespace StealthHuntAI.Combat
             if (threat.HasLOS)
                 FireAt(unit, threat.EstimatedPosition);
 
-            // Room cleared or timeout -- done
+            // Follow breacher inside after short delay -- dont leave them alone
+            if (_holdTimer > 3f && brain.CQB.BreacherReady)
+                return true; // done holding -- join breach
             return brain.CQB.RoomCleared || _holdTimer > MaxHoldTime;
         }
 

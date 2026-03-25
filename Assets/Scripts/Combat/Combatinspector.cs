@@ -65,8 +65,18 @@ namespace StealthHuntAI.Editor
 
             DrawPropertiesExcluding(serializedObject, "animSlots", "animTransitionDuration");
 
-            EditorGUILayout.Space(6);
-            DrawAnimationSection();
+            if (_animSlots != null)
+            {
+                EditorGUILayout.Space(6);
+                DrawAnimationSection();
+            }
+            else
+            {
+                EditorGUILayout.Space(4);
+                EditorGUILayout.HelpBox(
+                    "Combat animations are handled by StealthAnimator component.",
+                    MessageType.Info);
+            }
 
             if (EditorGUI.EndChangeCheck())
                 serializedObject.ApplyModifiedProperties();

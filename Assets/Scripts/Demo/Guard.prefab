@@ -451,6 +451,9 @@ PrefabInstance:
     - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: e52a3ac63e5d64146a9d540e47a13279, type: 3}
       insertIndex: -1
       addedObject: {fileID: -4617998378838723900}
+    - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: e52a3ac63e5d64146a9d540e47a13279, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 7174141105154106243}
     - targetCorrespondingSourceObject: {fileID: 944927156297921104, guid: e52a3ac63e5d64146a9d540e47a13279, type: 3}
       insertIndex: -1
       addedObject: {fileID: 7900719280539447767}
@@ -1650,10 +1653,6 @@ MonoBehaviour:
     clips:
     - Death
     customName: 
-  - trigger: 0
-    clips:
-    - 
-    customName: 
   alertPropagationRadius: 30
   combatBehaviourOverride: {fileID: 6159174385232656303}
   startingMorale: 1
@@ -1720,104 +1719,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 70102b6f06b145e4ba24a32e083e33f3, type: 3}
   m_Name: 
   m_EditorClassIdentifier: StealthHuntAI.Combat::StealthHuntAI.Combat.StandardCombat
-  weights:
-    protection: 1
-    proximity: 0.8
-    visibility: 0.9
-    crossfire: 0.7
-    formation: 0.5
-    pathPredict: 0.6
-    heatPenalty: 0.8
-    novelty: 0.4
-  ReplanInterval: 1.5
-  CoverSearchRange: 25
-  animSlots:
-  - trigger: 0
-    clips:
-    - Run Rifle
-    customName: 
-    extraKeywords: []
-  - trigger: 1
-    clips:
-    - Run Rifle
-    customName: 
-    extraKeywords: []
-  - trigger: 2
-    clips:
-    - Rifle Idle alert
-    customName: 
-    extraKeywords: []
-  - trigger: 3
-    clips:
-    - Rifle Crouch Walk
-    customName: 
-    extraKeywords: []
-  - trigger: 10
-    clips:
-    - Hit Reaction
-    customName: 
-    extraKeywords: []
-  - trigger: 11
-    clips:
-    - Rifle Fire
-    customName: 
-    extraKeywords:
-    - 
-  - trigger: 20
-    clips:
-    - Hit Reaction
-    customName: 
-    extraKeywords: []
-  - trigger: 23
-    clips:
-    - Prone Reloading
-    - Reload
-    - 
-    customName: 
-    extraKeywords: []
-  - trigger: 18
-    clips:
-    - Toss grenade
-    customName: 
-    extraKeywords: []
-  - trigger: 14
-    clips:
-    - Crouch To Prone
-    - 
-    customName: 
-    extraKeywords: []
-  - trigger: 16
-    clips:
-    - Prone Firing Rifle
-    - Prone Firing Rifle v 2
-    customName: 
-    extraKeywords: []
-  - trigger: 17
-    clips:
-    - Rifle Prone To Kneel
-    customName: 
-    extraKeywords: []
-  - trigger: 4
-    clips:
-    - Rifle Crouch Walk
-    customName: 
-    extraKeywords: []
-  - trigger: 12
-    clips:
-    - Rifle Fire
-    customName: 
-    extraKeywords: []
-  - trigger: 13
-    clips:
-    - Rifle Fire
-    customName: 
-    extraKeywords: []
-  - trigger: 25
-    clips:
-    - Death
-    customName: Death
-    extraKeywords: []
-  animTransitionDuration: 0.12
+  RoleInterval: 3
+  SpeedMultiplier: 1.4
 --- !u!114 &-4617998378838723900
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1840,6 +1743,24 @@ MonoBehaviour:
   noveltyWeight: 0.15
   concavityRays: 6
   concavityRadius: 1.5
+--- !u!114 &7174141105154106243
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 8202406276971202162}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c39a7af95502fcf4c816d8edd30ee589, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: StealthHuntAI.Core::StealthHuntAI.StealthAnimator
+  transitionDuration: 0.15
+  enableAimIK: 1
+  bodyWeight: 0.3
+  headWeight: 0.7
+  eyesWeight: 0
+  aimHeightOffset: 0.8
 --- !u!1 &8219249921818912041 stripped
 GameObject:
   m_CorrespondingSourceObject: {fileID: 1082271958561512970, guid: e52a3ac63e5d64146a9d540e47a13279, type: 3}

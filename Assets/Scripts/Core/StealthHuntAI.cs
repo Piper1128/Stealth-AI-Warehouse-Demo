@@ -278,6 +278,11 @@ namespace StealthHuntAI
         public SquadRole ActiveRole { get; private set; } = SquadRole.Dynamic;
         /// <summary>True if this unit is dead. Set by health system via SetDead().</summary>
         public bool IsDead { get; private set; }
+
+        // Accessors for StealthAnimator
+        public bool HasLastKnown => _hasLastKnown;
+        public ICombatBehaviour GetCombat() => _combat;
+
         public void SetDead() => IsDead = true;
 
         public float AwarenessLevel => _sensor != null ? _sensor.AwarenessLevel : 0f;
@@ -338,7 +343,6 @@ namespace StealthHuntAI
         private Vector3 _currentSearchDest;
         private bool _hasSearchDest;
         private int _searchPassCount;
-        private string _currentAnimState = "";
         private float _aimWeight;
         private ICombatBehaviour _combat;
         private bool _wasInCombat;
@@ -1006,29 +1010,7 @@ namespace StealthHuntAI
 
         private void UpdateAnimator()
         {
-            if (!_hasAnimator) return;
-            // Skip when Combat Pack owns animation
-            if (_combat != null && _combat.WantsControl) return;
-
-            float velocity = _movement != null ? _movement.ActualSpeed : 0f;
-            bool moving = velocity > 0.1f;
-
-            string target = GetTargetAnimState(moving);
-            if (string.IsNullOrEmpty(target)) return;
-
-            // Transition to new state
-            if (target != _currentAnimState)
-            {
-                _currentAnimState = target;
-                try { animator.CrossFade(target, animTransitionDuration); } catch { }
-                return;
-            }
-
-            // Re-trigger if animation has finished playing (not looping clips)
-            // Normalised time >= 0.95 means clip is near end
-            var info = animator.GetCurrentAnimatorStateInfo(0);
-            if (info.normalizedTime >= 0.95f && !info.loop)
-                try { animator.CrossFade(target, 0f); } catch { }
+            // Delegated to StealthAnimator component
         }
 
         private string GetTargetAnimState(bool moving)
@@ -1099,46 +1081,12 @@ namespace StealthHuntAI
         /// </summary>
         public void PlayAnimState(string customName, float transitionDuration = -1f)
         {
-            if (!_hasAnimator) return;
-            string clip = GetCustomClip(customName);
-            if (string.IsNullOrEmpty(clip)) return;
-            float dur = transitionDuration >= 0f ? transitionDuration : animTransitionDuration;
-            try { animator.CrossFade(clip, dur); } catch { }
+            GetComponent<StealthAnimator>()?.PlayState(customName, transitionDuration);
         }
 
         private void OnAnimatorIK(int layer)
         {
-            if (!_hasAnimator || !enableAimIK) return;
-            if (CurrentAlertState == AlertState.Passive) return;
-
-            // Determine aim target
-            Vector3 aimPos;
-            if (_sensor != null && _sensor.CanSeeTarget && _target != null)
-                aimPos = _target.Position + Vector3.up * aimTargetHeightOffset;
-            else if (_hasLastKnown)
-                aimPos = _lastKnownPosition + Vector3.up * aimTargetHeightOffset;
-            else
-                aimPos = transform.position + transform.forward * 5f
-                       + Vector3.up * aimTargetHeightOffset;
-
-            // Weight based on alert state
-            float weight = CurrentAlertState switch
-            {
-                AlertState.Hostile => 1.0f,
-                AlertState.Suspicious => 0.4f,
-                _ => 0f
-            };
-
-            // Smooth weight transition
-            _aimWeight = Mathf.MoveTowards(_aimWeight, weight, 2f * Time.deltaTime);
-            float smoothWeight = _aimWeight;
-
-            animator.SetLookAtWeight(smoothWeight,
-                                     aimBodyWeight * smoothWeight,
-                                     aimHeadWeight * smoothWeight,
-                                     aimEyesWeight * smoothWeight,
-                                     0.5f);
-            animator.SetLookAtPosition(aimPos);
+            // Delegated to StealthAnimator component
         }
 
         /// <summary>Kill this unit externally. Called by health components.</summary>
@@ -1186,10 +1134,7 @@ namespace StealthHuntAI
 
         public void PlayDeathAnim()
         {
-            if (!_hasAnimator) return;
-            string clip = GetClip(AnimTrigger.Death);
-            if (string.IsNullOrEmpty(clip)) return;
-            try { animator.CrossFade(clip, 0.1f); } catch { }
+            GetComponent<StealthAnimator>()?.PlayDeath();
         }
 
         /// <summary>Ensure default AnimSlots exist on first setup.</summary>

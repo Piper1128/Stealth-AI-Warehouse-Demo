@@ -181,11 +181,11 @@ namespace StealthHuntAI.Demo
                 }
             }
 
-            // Stagger duration scales with damage
-            float staggerDur = Mathf.Clamp(info.damage / 30f, 0.15f, 0.4f);
+            // Stagger max 0.2s -- combat pack needs agent running
+            float staggerDur = Mathf.Clamp(info.damage / 30f, 0.1f, 0.2f);
             yield return new UnityEngine.WaitForSeconds(staggerDur);
 
-            // Resume movement
+            // Always resume -- combat pack handles movement from here
             if (agent != null && !IsDead) agent.isStopped = false;
 
             // Force seek cover immediately after stagger

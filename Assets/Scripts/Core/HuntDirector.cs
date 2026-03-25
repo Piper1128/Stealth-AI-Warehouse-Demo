@@ -47,9 +47,7 @@ namespace StealthHuntAI
             _sectorWatchers.Clear();
             _flightHistory.Clear();
             _knownHideSpots.Clear();
-            PredictedFlightDir = Vector3.zero;
-            FlightObservations = 0;
-            _lastSector = -1;
+            FlightMemory.Reset();
             System.Array.Clear(_markov, 0, _markov.Length);
             _heatMap.Clear();
             _coverPoints.Clear();
@@ -167,6 +165,10 @@ namespace StealthHuntAI
         /// Simulates radio communication and squad coordination.
         /// </summary>
         // Guard against recursive AlertSquad calls
+        // AlertSystem drives tension and alert level
+        private readonly AlertSystem _alertSystem = new AlertSystem();
+        public static AlertSystem Alert => _instance?._alertSystem;
+
         private static bool _alertingSquad = false;
 
         public static void AlertSquad(StealthHuntAI source, float alertRadius = 40f)
@@ -235,7 +237,6 @@ namespace StealthHuntAI
         // Directional space divided into 8 sectors (N, NE, E, SE, S, SW, W, NW)
         // Transition matrix: _markov[from, to] = observation count
         private static readonly float[,] _markov = new float[8, 8];
-        private static int _lastSector = -1;
 
         // Prior strength -- flat prior so early predictions aren't wild
         private const float MarkovPrior = 0.5f;
@@ -249,10 +250,10 @@ namespace StealthHuntAI
         /// Blends Markov prediction with weighted history average.
         /// Accuracy improves with more encounters.
         /// </summary>
-        public static Vector3 PredictedFlightDir { get; private set; }
+        public static Vector3 PredictedFlightDir => FlightMemory.PredictedFlightDir;
 
         /// <summary>Total flight observations recorded this session.</summary>
-        public static int FlightObservations { get; private set; }
+        public static int FlightObservations => FlightMemory.Observations;
 
         // ---------- Hide spot memory -----------------------------------------
 
@@ -268,7 +269,8 @@ namespace StealthHuntAI
         private const int MaxHideSpots = 10;
         private const float HideSpotMergeRadius = 3f;
 
-        public static IReadOnlyList<HideSpotRecord> KnownHideSpots => _knownHideSpots;
+        public static System.Collections.Generic.IReadOnlyList<HideSpotRecord> KnownHideSpots
+            => _knownHideSpots;
 
         // Reused NavMeshPath for sound propagation -- initialized lazily
         private static NavMeshPath _soundPath;
@@ -356,6 +358,25 @@ namespace StealthHuntAI
 
         private void Awake()
         {
+            // Wire inspector fields to AlertSystem
+            _alertSystem.TensionDecaySpeed = tensionDecaySpeed;
+            _alertSystem.TensionRiseSpeed = tensionRiseSpeed;
+            _alertSystem.TensionZoneRadius = tensionZoneRadius;
+            _alertSystem.ProximityWeight = proximityWeight;
+            _alertSystem.EvasionWeight = evasionWeight;
+            _alertSystem.EvasionTimeToMax = evasionTimeToMaxTension;
+            _alertSystem.AlertCooldownTime = alertCooldownTime;
+            _alertSystem.CautionCooldownTime = cautionCooldownTime;
+            _alertSystem.CautionRiseMultiplier = cautionRiseMultiplier;
+            _alertSystem.AlertRiseMultiplier = alertRiseMultiplier;
+            _alertSystem.ScaleSpeedWithAlert = scaleSpeedWithAlert;
+            _alertSystem.CautionSpeedMultiplier = cautionSpeedMultiplier;
+            _alertSystem.AlertSpeedMultiplier = alertSpeedMultiplier;
+            _alertSystem.MinIntelConfidence = minIntelConfidence;
+            _alertSystem.OnNormal = onAlertLevelNormal;
+            _alertSystem.OnCaution = onAlertLevelCaution;
+            _alertSystem.OnAlert = onAlertLevelAlert;
+
             if (_instance != null && _instance != this)
             {
                 Debug.LogWarning("[HuntDirector] Duplicate instance found. Destroying.");
@@ -841,70 +862,12 @@ namespace StealthHuntAI
         /// </summary>
         public static void RecordFlightVector(Vector3 flightVec)
         {
-            if (flightVec.magnitude < 0.1f) return;
-
-            int currentSector = DirectionToSector(flightVec);
-
-            // Update Markov transition matrix
-            if (_lastSector >= 0)
-                _markov[_lastSector, currentSector] += 1f;
-
-            _lastSector = currentSector;
-            FlightObservations++;
-
-            // Also update weighted history for blending
-            _flightHistory.Enqueue(flightVec.normalized);
-            while (_flightHistory.Count > MaxFlightHistory)
-                _flightHistory.Dequeue();
-
-            UpdatePredictedFlight();
+            FlightMemory.RecordFlight(flightVec);
         }
 
         private static void UpdatePredictedFlight()
         {
-            if (FlightObservations == 0)
-            {
-                PredictedFlightDir = Vector3.zero;
-                return;
-            }
-
-            // Markov prediction -- best next sector given last observed sector
-            Vector3 markovPred = Vector3.zero;
-            if (_lastSector >= 0)
-            {
-                float bestScore = -1f;
-                int bestSec = 0;
-                for (int i = 0; i < 8; i++)
-                {
-                    float score = _markov[_lastSector, i] + MarkovPrior;
-                    if (score > bestScore) { bestScore = score; bestSec = i; }
-                }
-                markovPred = SectorToDirection(bestSec);
-            }
-
-            // Weighted history average
-            Vector3 histPred = Vector3.zero;
-            if (_flightHistory.Count > 0)
-            {
-                Vector3 sum = Vector3.zero;
-                float total = 0f;
-                var arr = _flightHistory.ToArray();
-                for (int i = 0; i < arr.Length; i++)
-                {
-                    float w = 1f + i;
-                    sum += arr[i] * w;
-                    total += w;
-                }
-                histPred = total > 0f ? (sum / total).normalized : Vector3.zero;
-            }
-
-            // Blend -- Markov weight grows with observations, maxes at 80%
-            float markovWeight = Mathf.Clamp01(FlightObservations / 10f) * 0.8f;
-            float histWeight = 1f - markovWeight;
-
-            Vector3 blended = markovPred * markovWeight + histPred * histWeight;
-            PredictedFlightDir = blended.magnitude > 0.01f
-                ? blended.normalized : Vector3.zero;
+            // Delegated to FlightMemory -- called automatically by RecordFlight
         }
 
         // ---------- Markov helpers --------------------------------------------
@@ -994,43 +957,7 @@ namespace StealthHuntAI
         /// </summary>
         public static void BroadcastSound(Vector3 position, float intensity, float radius)
         {
-            if (_soundPath == null)
-                _soundPath = new NavMeshPath();
-
-            for (int i = 0; i < _units.Count; i++)
-            {
-                var unit = _units[i];
-                if (unit == null) continue;
-
-                Vector3 unitPos = unit.transform.position + Vector3.up * 0.5f;
-                float dist = Vector3.Distance(unitPos, position);
-                if (dist > radius) continue;
-
-                float scaledIntensity;
-                Vector3 arrivalDir;
-
-                if (intensity < NavMeshSoundThreshold)
-                {
-                    // Low intensity (footsteps etc) -- raycast only, fast path
-                    PropagateRaycast(position, unitPos, dist, radius,
-                                     intensity, out scaledIntensity, out arrivalDir);
-                }
-                else
-                {
-                    // High intensity (gunshots, alarms) -- full NavMesh propagation
-                    PropagateNavMesh(position, unitPos, dist, radius,
-                                     intensity, out scaledIntensity, out arrivalDir);
-                }
-
-                if (scaledIntensity <= 0.01f) continue;
-
-                unit.GetComponent<AwarenessSensor>()
-                    ?.HearSound(position, scaledIntensity, arrivalDir);
-
-                // Near high-intensity shot -- passive/suspicious guards react immediately
-                if (intensity >= 0.8f && dist <= 12f)
-                    unit.OnNearShotHeard(position, scaledIntensity);
-            }
+            SoundSystem.Broadcast(position, intensity, radius);
         }
 
         private static void PropagateRaycast(

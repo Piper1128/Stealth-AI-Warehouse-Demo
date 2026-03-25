@@ -1,5 +1,4 @@
 using UnityEngine;
-using System.Collections.Generic;
 using StealthHuntAI.Combat.CQB;
 
 namespace StealthHuntAI.Combat
@@ -56,10 +55,9 @@ namespace StealthHuntAI.Combat
         // ---------- Builder --------------------------------------------------
 
         // ---------- Per-unit cache ------------------------------------------
-        // CheckHighGroundNearby and CheckNearEntryPoint are expensive raycasts.
-        // Cache results per unit and invalidate every 2 seconds.
 
-        private struct CachedChecks
+        /// <summary>Public so WorldStateCache component can return it.</summary>
+        public struct CachedChecks
         {
             public bool HighGround;
             public bool NearEntry;
@@ -67,26 +65,16 @@ namespace StealthHuntAI.Combat
             public float Time;
         }
 
-        private static readonly Dictionary<int, CachedChecks> _checkCache
-            = new Dictionary<int, CachedChecks>();
+        // Expensive checks (high ground, entry point) cached on a per-unit
+        // component to avoid stale static dictionary on scene reload.
+
         private const float CacheInterval = 0.5f;
 
         private static CachedChecks GetChecks(StealthHuntAI unit)
         {
-            int id = unit.GetInstanceID();
-            if (_checkCache.TryGetValue(id, out var cached)
-             && UnityEngine.Time.time - cached.Time < CacheInterval)
-                return cached;
-
-            var fresh = new CachedChecks
-            {
-                HighGround = CheckHighGroundNearby(unit),
-                NearEntry = CheckNearEntryPoint(unit),
-                Chokepoint = IsChokepointNearby(unit),
-                Time = UnityEngine.Time.time,
-            };
-            _checkCache[id] = fresh;
-            return fresh;
+            var cache = unit.GetComponent<WorldStateCache>();
+            if (cache == null) cache = unit.gameObject.AddComponent<WorldStateCache>();
+            return cache.Get(unit);
         }
 
         public static WorldState Build(StealthHuntAI unit, ThreatModel threat,

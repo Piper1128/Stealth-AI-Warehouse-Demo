@@ -19,7 +19,7 @@ namespace StealthHuntAI.Combat
         public Goal CurrentGoal { get; private set; }
         public bool IsInCover { get; private set; }
 
-        public enum CombatRole { Advance, Flank, Suppress, Cover, Cautious, CQB, Idle }
+        public enum CombatRole { Advance, Flank, Suppress, Cover, Cautious, Reposition, CQB, Idle }
 
         private StealthHuntAI _ai;
         private TacticalBrain _brain;
@@ -74,6 +74,13 @@ namespace StealthHuntAI.Combat
             if (target != null && ai.Sensor.CanSeeTarget)
                 _threat.UpdateWithSight(target.Position, target.Velocity);
 
+            // Guard against zero EstimatedPosition -- use own position as fallback
+            // so routing destinations are never world origin
+            if (_threat.EstimatedPosition == Vector3.zero)
+                _threat.ReceiveIntel(
+                    ai.transform.position + ai.transform.forward * 10f,
+                    Vector3.zero, 0.1f);
+
             SelectRole();
         }
 
@@ -92,8 +99,10 @@ namespace StealthHuntAI.Combat
                 (shotOrigin - _ai.transform.position).normalized);
             bool isMoving = _role == CombatRole.Advance
                          || _role == CombatRole.Flank
-                         || _role == CombatRole.Cautious;
-            if (!isMoving) ForceRole(CombatRole.Cover);
+                         || _role == CombatRole.Cautious
+                         || _role == CombatRole.Reposition;
+            if (!isMoving)
+                ForceRole(_threat.HasLOS ? CombatRole.Cover : CombatRole.Reposition);
         }
 
         public void Tick(StealthHuntAI ai)
@@ -181,18 +190,23 @@ namespace StealthHuntAI.Combat
 
             CombatRole role = strategy switch
             {
-                SquadStrategy.Bounding => advancing < squadSize / 2 + 1
-                                            ? CombatRole.Advance : CombatRole.Suppress,
+                // Bounding: max 1 guard advances at a time -- others suppress
+                SquadStrategy.Bounding => advancing == 0 ? CombatRole.Advance : CombatRole.Suppress,
                 SquadStrategy.Pincer => flanking < 2
                                             ? CombatRole.Flank
                                             : suppressing == 0 ? CombatRole.Suppress
-                                            : CombatRole.Advance,
-                SquadStrategy.Suppress => suppressing < squadSize * 0.6f
-                                            ? CombatRole.Suppress : CombatRole.Advance,
+                                            : CombatRole.Reposition,
+                SquadStrategy.Suppress => suppressing < Mathf.CeilToInt(squadSize * 0.5f)
+                                            ? CombatRole.Suppress : CombatRole.Reposition,
                 SquadStrategy.Overwatch => idx % 2 == 0 ? CombatRole.Advance : CombatRole.Cover,
                 SquadStrategy.Withdraw => CombatRole.Cover,
-                _ => advancing < Mathf.Max(1, squadSize / 2)
-                                            ? CombatRole.Advance : CombatRole.Suppress,
+                // Default: cautious approach on first contact, then advance/suppress
+                _ => _threat.LastSeenTime < 0f
+                        ? CombatRole.Cautious   // never seen -- find target first
+                   : advancing == 0 && _threat.TimeSinceSeen < 10f
+                        ? CombatRole.Advance
+                   : suppressing == 0 ? CombatRole.Suppress
+                   : CombatRole.Reposition,
             };
 
             // Use cautious only when actively being shot at from unknown direction
@@ -216,10 +230,11 @@ namespace StealthHuntAI.Combat
             _roleMaxTime = role switch
             {
                 CombatRole.Suppress => 4f,
-                CombatRole.Cover => 3f,  // shorter cover -- keeps guards moving
-                CombatRole.Advance => 12f, // longer advance -- commit to push
-                CombatRole.Flank => 15f, // flanks take time
+                CombatRole.Cover => 3f,
+                CombatRole.Advance => 12f,
+                CombatRole.Flank => 15f,
                 CombatRole.Cautious => 10f,
+                CombatRole.Reposition => 8f,
                 CombatRole.CQB => 30f,
                 _ => 8f,
             };
@@ -228,6 +243,7 @@ namespace StealthHuntAI.Combat
                 CombatRole.Advance => Goal.AdvanceTo,
                 CombatRole.Flank => Goal.Flank,
                 CombatRole.Suppress => Goal.Suppress,
+                CombatRole.Reposition => Goal.AdvanceTo,
                 CombatRole.Cover => Goal.HoldAndFire,
                 CombatRole.Cautious => Goal.AdvanceTo,
                 _ => Goal.Idle,
@@ -260,6 +276,10 @@ namespace StealthHuntAI.Combat
 
         private void TickAdvance()
         {
+            // Stale intel -- switch to cautious search instead of blind advance
+            if (_threat.TimeSinceSeen > 15f && !_threat.HasLOS)
+            { ForceRole(CombatRole.Cautious); return; }
+
             Vector3 dest = GetRoutingDest();
             if (!_roleDestSet || Vector3.Distance(_roleDestination, dest) > 6f)
             {
@@ -270,23 +290,35 @@ namespace StealthHuntAI.Combat
                 Vector3 perp = Vector3.Cross(toT.normalized, Vector3.up);
                 float spread = Mathf.Approximately(toT.magnitude, 0f) ? 0f
                                : (idx - count * 0.5f) * 3f;
-                _roleDestination = dest + perp * spread;
+                Vector3 rawDest = dest + perp * spread;
+                // Sample onto NavMesh -- prevents destination inside walls
+                _roleDestination = NavMesh.SamplePosition(rawDest, out var navHit, 4f,
+                    NavMesh.AllAreas) ? navHit.position : dest;
                 _waypoints = TacticalPathfinder.BuildAdvanceRoute(_ai, _roleDestination);
                 _waypointIdx = 0;
                 _roleDestSet = true;
             }
 
             if (_waypoints != null && _waypoints.Count > 0)
-                TacticalPathfinder.FollowWaypoints(_ai, _waypoints, ref _waypointIdx,
-                    SpeedMultiplier);
+            {
+                // Follow waypoints with correct speed
+                if (_waypointIdx < _waypoints.Count)
+                    _ai.CombatMoveTo(_waypoints[_waypointIdx], SpeedMultiplier);
+                bool done = TacticalPathfinder.FollowWaypoints(_ai, _waypoints,
+                    ref _waypointIdx);
+                if (done) _roleTimer = _roleMaxTime;
+            }
             else
-                _ai.CombatMoveTo(_roleDestination, SpeedMultiplier);
+            {
+                // No waypoints -- direct move, reset dest if blocked
+                if (IsDestinationBlocked(_roleDestination))
+                    _roleDestSet = false;
+                else
+                    _ai.CombatMoveTo(_roleDestination, SpeedMultiplier);
+            }
 
             if (Vector3.Distance(_ai.transform.position, _roleDestination) < 4f)
-            {
-                // Arrived -- hold and fire briefly, then planner picks next role
-                _roleTimer = _roleMaxTime; // trigger role reselect
-            }
+                _roleTimer = _roleMaxTime;
         }
 
         // --- Flank -----------------------------------------------------------
@@ -317,10 +349,17 @@ namespace StealthHuntAI.Combat
             }
 
             if (_waypoints != null && _waypoints.Count > 0)
-                TacticalPathfinder.FollowWaypoints(_ai, _waypoints, ref _waypointIdx,
-                    SpeedMultiplier);
+            {
+                if (_waypointIdx < _waypoints.Count)
+                    _ai.CombatMoveTo(_waypoints[_waypointIdx], SpeedMultiplier);
+                TacticalPathfinder.FollowWaypoints(_ai, _waypoints, ref _waypointIdx);
+            }
             else
+            {
+                if (IsDestinationBlocked(_roleDestination))
+                { _roleDestSet = false; return; }
                 _ai.CombatMoveTo(_roleDestination, SpeedMultiplier);
+            }
 
             if (Vector3.Distance(_ai.transform.position, _roleDestination) < 2f)
                 ForceRole(CombatRole.Cover);
@@ -330,7 +369,6 @@ namespace StealthHuntAI.Combat
 
         private void TickSuppress()
         {
-            _ai.CombatStop();
             IsInCover = false;
             Vector3 target = GetBestKnownPos();
             _ai.CombatFaceToward(target, 200f);
@@ -343,6 +381,8 @@ namespace StealthHuntAI.Combat
 
             if (!blocked)
             {
+                // Have firing angle -- stop and suppress
+                _ai.CombatStop();
                 _suppressBurstTimer += Time.deltaTime;
                 if (_suppressBurstTimer > 0.35f)
                 {
@@ -351,9 +391,14 @@ namespace StealthHuntAI.Combat
                     if (++_suppressBurst >= 3)
                     {
                         _suppressBurst = 0;
-                        ForceRole(CombatRole.Advance);
+                        ForceRole(CombatRole.Reposition);
                     }
                 }
+            }
+            else
+            {
+                // No firing angle -- immediately reposition for better angle
+                ForceRole(CombatRole.Reposition);
             }
         }
 
@@ -391,9 +436,102 @@ namespace StealthHuntAI.Combat
                 _peekTimer += Time.deltaTime;
                 Vector3 target = GetBestKnownPos();
                 _ai.CombatFaceToward(target, 150f);
-                if (_threat.HasLOS) { ShootAt(target); _peekTimer = 0f; }
-                if (_peekTimer > 1.5f) { IsInCover = false; ForceRole(CombatRole.Advance); }
+                if (_threat.HasLOS)
+                {
+                    ShootAt(target);
+                    _peekTimer = 0f;
+                }
+                // After brief cover -- reposition for angle rather than static peek
+                if (_peekTimer > 1.0f)
+                {
+                    IsInCover = false;
+                    ForceRole(_threat.HasLOS ? CombatRole.Suppress : CombatRole.Reposition);
+                }
             }
+        }
+
+        // --- Reposition ------------------------------------------------------
+        // Move to a new angle on threat to gain LOS without closing distance.
+        // Orbits around LastKnownPosition at current range.
+
+        private void TickReposition()
+        {
+            if (!_roleDestSet)
+            {
+                Vector3 threatPos = GetRoutingDest();
+                Vector3 toUnit = (_ai.transform.position - threatPos);
+                toUnit.y = 0f;
+                float range = Mathf.Clamp(toUnit.magnitude, 8f, 25f);
+                float currentAngle = Mathf.Atan2(toUnit.x, toUnit.z) * Mathf.Rad2Deg;
+                float[] offsets = { 45f, -45f, 70f, -70f, 100f, -100f, 130f, -130f };
+
+                Vector3 bestPos = Vector3.zero;
+                float bestScore = float.MinValue;
+                bool found = false;
+
+                foreach (float offset in offsets)
+                {
+                    float newAngle = (currentAngle + offset) * Mathf.Deg2Rad;
+                    Vector3 newDir = new Vector3(Mathf.Sin(newAngle), 0f,
+                                                   Mathf.Cos(newAngle));
+                    Vector3 tryPos = threatPos + newDir * range;
+
+                    if (!NavMesh.SamplePosition(tryPos, out var hit, 4f,
+                        NavMesh.AllAreas)) continue;
+                    if (!NavRouter.HasPath(_ai.transform.position, hit.position))
+                        continue;
+                    if (Vector3.Distance(hit.position, _ai.transform.position) < 3f)
+                        continue;
+
+                    // Score -- prefer cover but dont require it
+                    float score = 0f;
+                    bool hasCover = TacticalFilter.IsExposedToThreat(
+                        hit.position, threatPos) == false;
+                    if (hasCover) score += 10f;
+
+                    // Prefer positions that are closer to us (less travel)
+                    float travelDist = Vector3.Distance(
+                        _ai.transform.position, hit.position);
+                    score -= travelDist * 0.1f;
+
+                    // Prefer angles that are more different from current
+                    score += Mathf.Abs(offset) * 0.05f;
+
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        bestPos = hit.position;
+                        found = true;
+                    }
+                }
+
+                if (!found) { ForceRole(CombatRole.Suppress); return; }
+
+                _roleDestination = bestPos;
+                _waypoints = TacticalPathfinder.BuildAdvanceRoute(
+                    _ai, _roleDestination);
+                _waypointIdx = 0;
+                _roleDestSet = true;
+            }
+
+            if (_waypoints != null && _waypoints.Count > 0)
+            {
+                if (_waypointIdx < _waypoints.Count)
+                    _ai.CombatMoveTo(_waypoints[_waypointIdx], SpeedMultiplier);
+                bool done = TacticalPathfinder.FollowWaypoints(_ai, _waypoints,
+                    ref _waypointIdx);
+                if (done)
+                {
+                    _ai.CombatStop();
+                    _ai.CombatFaceToward(GetRoutingDest(), 120f);
+                    if (_threat.HasLOS)
+                        ForceRole(CombatRole.Suppress);
+                    else if (_roleTimer > _roleMaxTime * 0.8f)
+                        ForceRole(CombatRole.Cautious);
+                }
+            }
+            else
+                _ai.CombatMoveTo(_roleDestination, SpeedMultiplier);
         }
 
         // --- Cautious --------------------------------------------------------
@@ -445,7 +583,8 @@ namespace StealthHuntAI.Combat
             if (_cqbAction == null)
             {
                 var role = _brain.CQB.GetRole(_ai);
-                _cqbAction = (!role.HasValue || role.Value.IsHolder)
+                // All guards stack first -- holders hold fatal funnel then follow
+                _cqbAction = (role.HasValue && role.Value.IsHolder)
                     ? (GoapAction)new HoldFatalFunnelAction()
                     : new StackAction();
                 _cqbAction.OnEnter(_ai, _threat);
@@ -455,20 +594,18 @@ namespace StealthHuntAI.Combat
             if (!done) return;
 
             _cqbAction.OnExit(_ai);
-            var r = _brain.CQB.GetRole(_ai);
-            if (r.HasValue && !r.Value.IsHolder)
+
+            // All guards progress: Stack/Hold -> Breach -> ClearCorner
+            GoapAction next = _cqbAction switch
             {
-                GoapAction next = _cqbAction switch
-                {
-                    StackAction => new BreachAction(),
-                    BreachAction => new ClearCornerAction(),
-                    _ => null,
-                };
-                if (next != null) { _cqbAction = next; _cqbAction.OnEnter(_ai, _threat); }
-                else { _cqbAction = null; ForceRole(CombatRole.Advance); }
-            }
-            else
-            { _cqbAction = null; ForceRole(CombatRole.Advance); }
+                StackAction => new BreachAction(),
+                HoldFatalFunnelAction => new BreachAction(), // holder follows as support
+                BreachAction => new ClearCornerAction(),
+                _ => null,
+            };
+
+            if (next != null) { _cqbAction = next; _cqbAction.OnEnter(_ai, _threat); }
+            else { _cqbAction = null; ForceRole(CombatRole.Advance); }
         }
 
         // ---------- CQB evaluation -------------------------------------------
@@ -477,6 +614,28 @@ namespace StealthHuntAI.Combat
         {
             if (_brain.CQB.IsActive || !_threat.HasIntel) return;
 
+            Vector3 threatPos = _threat.EstimatedPosition;
+
+            // Only evaluate CQB if an entry point is the natural route to player.
+            // Check: is there a direct NavMesh path to player WITHOUT going through
+            // an entry point? If yes, normal combat -- no CQB needed.
+            var ep = EntryPointRegistry.FindBest(_ai.transform.position, threatPos);
+            if (ep == null) return; // no entry points near threat
+
+            float distEpToThreat = Vector3.Distance(ep.transform.position, threatPos);
+            if (distEpToThreat > 12f) return; // entry point not close to threat
+
+            // Check if direct path to threat is shorter than path via entry point
+            // If guard can reach threat directly without entry point, skip CQB
+            float directDist = NavRouter.PathLength(_ai.transform.position, threatPos);
+            float viaEntryDist = NavRouter.PathLength(_ai.transform.position,
+                                      ep.transform.position)
+                                + distEpToThreat;
+
+            // CQB only if going via entry point is necessary (no shorter direct path)
+            // Allow 20% tolerance -- entry point must be clearly the required route
+            if (directDist > 0f && directDist < viaEntryDist * 1.2f) return;
+
             var members = new List<StealthHuntAI>();
             var all = HuntDirector.AllUnits;
             for (int i = 0; i < all.Count; i++)
@@ -484,17 +643,17 @@ namespace StealthHuntAI.Combat
                     members.Add(all[i]);
 
             members.Sort((a, b) =>
-                Vector3.Distance(a.transform.position, _threat.EstimatedPosition)
+                Vector3.Distance(a.transform.position, threatPos)
                 .CompareTo(
-                Vector3.Distance(b.transform.position, _threat.EstimatedPosition)));
+                Vector3.Distance(b.transform.position, threatPos)));
 
             bool started = _brain.CQB.EvaluateEntry(_ai.transform.position,
-                _threat.EstimatedPosition, _threat.Confidence, members);
+                threatPos, _threat.Confidence, members);
 
             if (started)
             {
                 _brain.SetCommittedGoal(TacticalBrain.CommittedGoalData.GoalType.ClearRoom,
-                    _threat.EstimatedPosition, 120f);
+                    threatPos, 120f);
                 for (int i = 0; i < all.Count; i++)
                 {
                     if (all[i] == null || all[i].squadID != _ai.squadID) continue;
@@ -502,6 +661,7 @@ namespace StealthHuntAI.Combat
                 }
             }
         }
+        
 
         // ---------- Threat update --------------------------------------------
 
@@ -539,7 +699,8 @@ namespace StealthHuntAI.Combat
                     if (evt.Value.Position != Vector3.zero)
                         _threat.RegisterShotFrom(evt.Value.Position,
                             (evt.Value.Position - _ai.transform.position).normalized);
-                    ForceRole(_threat.HasLOS ? CombatRole.Cover : CombatRole.Cautious);
+                    // Seek cover briefly then reposition for angle
+                    ForceRole(_threat.HasLOS ? CombatRole.Cover : CombatRole.Reposition);
                     break;
                 case CombatEventType.ThreatFlank:
                     _threat.ReceiveIntel(evt.Value.Position, Vector3.zero, 0.8f);
@@ -583,15 +744,7 @@ namespace StealthHuntAI.Combat
         private TacticalSpot FindCoverSpot()
         {
             if (TacticalSystem.Instance == null) return null;
-            var ctx = new TacticalContext
-            {
-                Unit = _ai,
-                UnitPosition = _ai.transform.position,
-                EstimatedThreatPos = _threat.EstimatedPosition,
-                Threat = _threat,
-                SearchRadius = 20f,
-                NavMeshMask = NavMesh.AllAreas,
-            };
+            var ctx = TacticalContext.Build(_ai, _threat, _brain, 20f);
             return TacticalSystem.Instance.EvaluateSync(ctx);
         }
 
@@ -673,7 +826,9 @@ namespace StealthHuntAI.Combat
             if (_stuckTimer > 2f)
             {
                 _blockedCells.Add(WorldToCell(agent.destination));
-                _roleDestSet = false; _waypoints = null;
+                _roleDestSet = false;
+                _waypoints = null;
+                _roleTimer = _roleMaxTime; // force role reselect with new dest
                 _stuckTimer = 0f; _lastPos = _ai.transform.position;
                 agent.ResetPath();
             }

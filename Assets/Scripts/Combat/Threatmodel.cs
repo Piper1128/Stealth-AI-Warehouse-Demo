@@ -144,8 +144,8 @@ namespace StealthHuntAI.Combat
             LastKnownVelocity = Vector3.Lerp(LastKnownVelocity, velocity, blend);
             Confidence = Mathf.Max(Confidence, confidence * 0.9f);
 
-            // Only update LastKnownPosition from direct sight (handled in UpdateWithSight)
-            if (confidence > 0.8f)
+            // Update LastKnownPosition from confident intel (not just direct sight)
+            if (confidence > 0.4f)
             {
                 LastKnownPosition = position;
                 LastSeenTime = Time.time - (1f - confidence) * ConfidenceDecayTime;
@@ -165,8 +165,8 @@ namespace StealthHuntAI.Combat
         /// <summary>Call when entering combat -- prevents stale TimeSinceSeen on first frame.</summary>
         public void OnEnterCombat()
         {
-            if (LastSeenTime < 0f)
-                LastSeenTime = Time.time;
+            // Do NOT fake LastSeenTime -- guards without intel use Cautious
+            // LastSeenTime stays at -999f until actual sight or high-conf intel
         }
 
         // ---------- Search cone ----------------------------------------------
