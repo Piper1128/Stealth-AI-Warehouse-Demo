@@ -23,6 +23,29 @@ namespace StealthHuntAI.Combat
         /// <summary>Central role controller -- runs on squad leader.</summary>
         public SquadTactician Tactician { get; } = new SquadTactician();
 
+
+        // ---------- Squad anchor -----------------------------------------
+
+        /// <summary>
+        /// Cached center of all live squad members.
+        /// Updated by TacticianRunner every frame -- O(n) once per squad not per guard.
+        /// </summary>
+        public Vector3 SquadAnchor { get; private set; }
+        public float CoherencyRadius { get; set; } = 18f;
+
+        public void UpdateSquadAnchor(IReadOnlyList<StealthHuntAI> allUnits, int squadID)
+        {
+            var sum = Vector3.zero;
+            int n = 0;
+            for (int i = 0; i < allUnits.Count; i++)
+            {
+                var u = allUnits[i];
+                if (u == null || u.IsDead || u.squadID != squadID) continue;
+                sum += u.transform.position;
+                n++;
+            }
+            if (n > 0) SquadAnchor = sum / n;
+        }
         // ---------- Backward-compat passthroughs ----------------------------
 
         /// <summary>Backward compat: returns Intel.Threat.</summary>

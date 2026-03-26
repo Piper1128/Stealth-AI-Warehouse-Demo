@@ -1592,8 +1592,8 @@ MonoBehaviour:
   guardZoneWaypointCount: 4
   guardZoneWaitTime: 1.5
   eyeHeight: 1.6
-  searchDuration: 20
-  searchRadius: 12
+  searchDuration: 40
+  searchRadius: 30
   searchPointCount: 5
   searchHeightRange: 1
   movementProvider: {fileID: 0}

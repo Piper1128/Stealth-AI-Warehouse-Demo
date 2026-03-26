@@ -65,24 +65,73 @@ namespace StealthHuntAI.Combat
         /// Drain all pending events and return the highest priority one.
         /// Returns null if no events pending.
         /// </summary>
+        /// <summary>
+        /// Consume the highest priority event.
+        /// Lower priority events are kept -- they will be consumed next frame.
+        /// This prevents a DamageTaken from silently eating a ThreatFound
+        /// that fired on the same frame.
+        /// </summary>
         public CombatEvent? ConsumeHighestPriority()
         {
             if (_pending.Count == 0) return null;
 
+            int bestIdx = 0;
+            int bestPriority = GetPriority(_pending[0].Type);
+
+            for (int i = 1; i < _pending.Count; i++)
+            {
+                int p = GetPriority(_pending[i].Type);
+                if (p > bestPriority) { bestIdx = i; bestPriority = p; }
+            }
+
+            var best = _pending[bestIdx];
+            _pending.RemoveAt(bestIdx);
+            return best;
+        }
+
+        public bool HasEvents => _pending.Count > 0;
+
+        /// <summary>
+        /// Peek at highest priority event without consuming it.
+        /// Use when you need to react to an event type but not drain the queue.
+        /// </summary>
+        public CombatEvent? Peek()
+        {
+            if (_pending.Count == 0) return null;
             CombatEvent best = _pending[0];
             int bestPriority = GetPriority(best.Type);
-
             for (int i = 1; i < _pending.Count; i++)
             {
                 int p = GetPriority(_pending[i].Type);
                 if (p > bestPriority) { best = _pending[i]; bestPriority = p; }
             }
-
-            _pending.Clear();
             return best;
         }
 
-        public bool HasEvents => _pending.Count > 0;
+        /// <summary>
+        /// Consume only events of a specific type -- leave others in queue.
+        /// </summary>
+        public CombatEvent? ConsumeType(CombatEventType type)
+        {
+            for (int i = 0; i < _pending.Count; i++)
+            {
+                if (_pending[i].Type == type)
+                {
+                    var evt = _pending[i];
+                    _pending.RemoveAt(i);
+                    return evt;
+                }
+            }
+            return null;
+        }
+
+        /// <summary>True if a specific event type is pending.</summary>
+        public bool HasEventOfType(CombatEventType type)
+        {
+            for (int i = 0; i < _pending.Count; i++)
+                if (_pending[i].Type == type) return true;
+            return false;
+        }
 
         private static int GetPriority(CombatEventType type) => type switch
         {

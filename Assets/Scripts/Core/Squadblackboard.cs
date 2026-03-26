@@ -335,6 +335,136 @@ namespace StealthHuntAI
             return false;
         }
 
+
+        // ---------- Role slot coordination -----------------------------------
+        // SquadTactician writes available slots. Guards claim them based on
+        // position -- closest guard to ideal position wins the slot.
+        // This replaces index-based role assignment with emergent coordination.
+
+
+        /// <summary>
+        /// Combat role for blackboard coordination.
+        /// Mirrors StandardCombat.CombatRole -- kept separate to avoid
+        /// Core -> Combat assembly dependency.
+        /// </summary>
+        public enum TacticalRole
+        {
+            Advance, Flank, Suppress, Cover, Cautious,
+            Reposition, Search, Overwatch, RearSecurity,
+            Breach, Follow, Withdraw, CQB, Idle
+        }
+
+        public class RoleSlot
+        {
+            public TacticalRole Role;
+            public StealthHuntAI ClaimedBy;   // null = available
+            public Vector3 IdealPosition;     // where this role should go
+            public float ClaimedAt;
+            public bool IsAvailable => ClaimedBy == null
+                || ClaimedBy.IsDead
+                || Time.time - ClaimedAt > 8f; // expire stale claims
+        }
+
+        private readonly List<RoleSlot> _roleSlots = new List<RoleSlot>();
+
+        /// <summary>
+        /// Called by SquadTactician each evaluation.
+        /// Replaces all current slots with new ones for the scenario.
+        /// Dead guard claims are cleared automatically via IsAvailable.
+        /// </summary>
+        public void WriteRoleSlots(List<RoleSlot> slots)
+        {
+            _roleSlots.Clear();
+            _roleSlots.AddRange(slots);
+        }
+
+        /// <summary>
+        /// Guard tries to claim the best available slot for its position.
+        /// Returns the claimed slot or null if none available.
+        /// Guards closer to the ideal position score higher.
+        /// </summary>
+        public RoleSlot ClaimBestSlot(StealthHuntAI unit)
+        {
+            RoleSlot best = null;
+            float bestScore = float.MinValue;
+
+            for (int i = 0; i < _roleSlots.Count; i++)
+            {
+                var slot = _roleSlots[i];
+                if (!slot.IsAvailable) continue;
+                // Already claimed by this unit -- keep it
+                if (slot.ClaimedBy == unit) return slot;
+
+                float score = ScoreSlotForUnit(slot, unit);
+                if (score > bestScore) { bestScore = score; best = slot; }
+            }
+
+            if (best != null)
+            {
+                best.ClaimedBy = unit;
+                best.ClaimedAt = Time.time;
+            }
+            return best;
+        }
+
+        /// <summary>Release this unit's claim when it changes role or dies.</summary>
+        public void ReleaseSlot(StealthHuntAI unit)
+        {
+            for (int i = 0; i < _roleSlots.Count; i++)
+                if (_roleSlots[i].ClaimedBy == unit)
+                    _roleSlots[i].ClaimedBy = null;
+        }
+
+        /// <summary>Get the slot currently claimed by this unit.</summary>
+        public RoleSlot GetClaimedSlot(StealthHuntAI unit)
+        {
+            for (int i = 0; i < _roleSlots.Count; i++)
+                if (_roleSlots[i].ClaimedBy == unit && !_roleSlots[i].IsAvailable == false)
+                    return _roleSlots[i];
+            return null;
+        }
+
+        public IReadOnlyList<RoleSlot> RoleSlots => _roleSlots;
+
+        private static float ScoreSlotForUnit(RoleSlot slot, StealthHuntAI unit)
+        {
+            float dist = slot.IdealPosition != Vector3.zero
+                ? Vector3.Distance(unit.transform.position, slot.IdealPosition)
+                : 0f;
+            // Closer is better -- max score at 0m, decays over 30m
+            return 1f - Mathf.Clamp01(dist / 30f);
+        }
+
+        // ---------- Destination registry -------------------------------------
+        // Guards register their movement destinations so others avoid overlap.
+
+        private readonly Dictionary<StealthHuntAI, Vector3> _destinations
+            = new Dictionary<StealthHuntAI, Vector3>();
+
+        /// <summary>Register where this guard is moving to.</summary>
+        public void RegisterDestination(StealthHuntAI unit, Vector3 dest)
+            => _destinations[unit] = dest;
+
+        /// <summary>Unregister when guard stops or changes role.</summary>
+        public void UnregisterDestination(StealthHuntAI unit)
+            => _destinations.Remove(unit);
+
+        /// <summary>
+        /// Returns true if another guard is already moving to within radius of dest.
+        /// </summary>
+        public bool IsDestinationClaimed(StealthHuntAI unit, Vector3 dest, float radius = 3f)
+        {
+            foreach (var pair in _destinations)
+            {
+                if (pair.Key == unit || pair.Key == null || pair.Key.IsDead) continue;
+                if (Vector3.Distance(pair.Value, dest) < radius) return true;
+            }
+            return false;
+        }
+
+        /// <summary>Clear all destinations -- called on squad reset.</summary>
+        public void ClearDestinations() => _destinations.Clear();
+
         // ---------- Spatial helpers -------------------------------------------
 
         private void AssignFlankPoint(StealthHuntAI unit, Vector3 targetPos)

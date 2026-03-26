@@ -117,10 +117,14 @@ namespace StealthHuntAI.Demo
                 // Become hostile
                 _ai?.ForceHostile();
 
-                // Raise combat event -- triggers immediate cover seek
+                // Raise combat event -- position is estimated SHOOTER position
+                // not own position -- guards need to know where fire came FROM
+                Vector3 shooterEstimate = info.direction != Vector3.zero
+                    ? transform.position - info.direction.normalized * 20f
+                    : Vector3.zero;
                 CombatEventBus.Get(_ai).Raise(
                     CombatEventType.DamageTaken, _ai,
-                    transform.position, info.direction,
+                    shooterEstimate, info.direction,
                     info.damage / maxHealth);
 
                 // Broadcast pain -- nearby guards react
@@ -164,8 +168,10 @@ namespace StealthHuntAI.Demo
             var agent = GetComponent<UnityEngine.AI.NavMeshAgent>();
             var sc = GetComponent<StandardCombat>();
 
-            // Stop movement briefly
-            if (agent != null) agent.isStopped = true;
+            // Briefly suppress movement via speed=0 -- agent.isStopped gets
+            // overridden by CombatMoveTo on next frame
+            float savedSpeed = agent != null ? agent.speed : 0f;
+            if (agent != null) agent.speed = 0f;
 
             // Push in hit direction (visual knockback via transform)
             if (info.direction != Vector3.zero)
@@ -185,11 +191,10 @@ namespace StealthHuntAI.Demo
             float staggerDur = Mathf.Clamp(info.damage / 30f, 0.1f, 0.2f);
             yield return new UnityEngine.WaitForSeconds(staggerDur);
 
-            // Always resume -- combat pack handles movement from here
-            if (agent != null && !IsDead) agent.isStopped = false;
+            // Restore speed -- combat pack handles movement from here
+            if (agent != null && !IsDead) agent.speed = savedSpeed;
 
-            // Force seek cover immediately after stagger
-            if (!IsDead) ForceSeekCover();
+            // Cover seeking handled by CombatEventBus.DamageTaken in ProcessEvents
         }
 
         private void ForceSeekCover()

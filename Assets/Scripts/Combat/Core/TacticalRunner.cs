@@ -25,6 +25,7 @@ namespace StealthHuntAI.Combat
                 // Tick all brain subsystems -- null guard on WorldState
                 try
                 {
+                    brain.UpdateSquadAnchor(all, u.squadID);
                     brain.Tactician.Tick(Time.deltaTime, brain, all, u.squadID);
                     brain.TickCommittedGoal();
                     brain.CQB.Tick(Time.deltaTime);

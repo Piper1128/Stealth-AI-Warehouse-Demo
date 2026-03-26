@@ -18,12 +18,13 @@ namespace StealthHuntAI.Combat
 
         private Vector3 _coverDest;
         private bool _destSet;
-        private float _phaseTimer;
-        private int _shotsFired;
-        private int _repositionCount;
 
-        public override bool CheckPreconditions(WorldState s)
-            => !s.InCover;
+        // Situation-based timers -- not counters
+        private float _exposedTimer;      // how long guard has had LOS while in cover
+        private float _repositionWindow;  // when to reposition (randomized per cover)
+        private bool _tookDamage;        // set by event -- reposition immediately
+
+        public override bool CheckPreconditions(WorldState s) => !s.InCover;
 
         public override WorldState ApplyEffects(WorldState s)
         {
@@ -32,51 +33,37 @@ namespace StealthHuntAI.Combat
         }
 
         public override float GetCost(WorldState s, StealthHuntAI unit)
-        {
-            // Cheap when under fire, expensive when safe
-            float urgency = s.IsSuppressed ? 0.2f : 1.5f;
-            return urgency;
-        }
+            => s.IsSuppressed ? 0.2f : 1.5f;
 
         public override void OnEnter(StealthHuntAI unit, ThreatModel threat)
         {
             _destSet = false;
-            _phaseTimer = 0f;
-            _shotsFired = 0;
-            _repositionCount = 0;
+            _exposedTimer = 0f;
+            _repositionWindow = UnityEngine.Random.Range(1.8f, 3.5f);
+            _tookDamage = false;
+            ResetMoveDest();
         }
 
         public override bool Execute(StealthHuntAI unit, ThreatModel threat,
                                       TacticalBrain brain, float dt)
         {
+            // Find cover dest
             if (!_destSet)
             {
                 if (TacticalSystem.Instance != null)
                 {
                     var ctx = TacticalContext.Build(unit, threat, brain);
-                    TacticalSystem.Instance.EvaluateSync(ctx);
-                    var all = TacticalSystem.Instance.LastCandidates;
-
+                    TacticalSystem.Instance.EvaluateSync(ctx, out var all);
                     if (all != null)
                     {
                         var squadUnits = HuntDirector.AllUnits;
                         foreach (var spot in all)
                         {
                             if (spot.CoverPoint == null) continue;
-                            bool tooClose = false;
-                            for (int i = 0; i < squadUnits.Count; i++)
-                            {
-                                var u = squadUnits[i];
-                                if (u == null || u == unit || u.squadID != unit.squadID) continue;
-                                if (Vector3.Distance(spot.Position, u.transform.position) < 2.5f)
-                                { tooClose = true; break; }
-                            }
-                            if (!tooClose)
-                            {
-                                _coverDest = spot.Position;
-                                _destSet = true;
-                                break;
-                            }
+                            if (IsOccupiedBySquadmate(spot, unit, squadUnits)) continue;
+                            _coverDest = spot.Position;
+                            _destSet = true;
+                            break;
                         }
                     }
                 }
@@ -87,76 +74,59 @@ namespace StealthHuntAI.Combat
                 }
             }
 
-            _phaseTimer += dt;
-
             // Move to cover
-            bool arrived = MoveTo(unit, _coverDest);
-            if (!arrived) return false;
+            if (!MoveTo(unit, _coverDest)) return false;
 
-            // In cover -- peek and shoot
+            // In cover
             unit.CombatStop();
             Vector3 target = GetBestKnownPosition(unit, threat);
             FaceToward(unit, target, 200f);
 
-            // Shoot immediately on arrival, then again after 0.3s
-            if (_phaseTimer >= 0.3f && threat.Confidence > 0.05f)
+            // Shoot when we have LOS
+            if (threat.HasLOS && threat.Confidence > 0.05f)
             {
                 FireAt(unit, target);
-                _shotsFired++;
-                _phaseTimer = 0f;
+                _exposedTimer += dt; // track how long we've been exposed
+            }
+            else
+            {
+                _exposedTimer = 0f;
             }
 
-            if (_shotsFired >= 2)
+            // Check damage event -- immediate reposition
+            var events = CombatEventBus.Get(unit);
+            if (events != null && events.HasEvents)
             {
-                _repositionCount++;
-                // After 3 repositions complete action -- let planner pick next
-                if (_repositionCount >= 3) return true;
+                var evt = events.Peek();
+                if (evt != null && (evt.Value.Type == CombatEventType.DamageTaken
+                                 || evt.Value.Type == CombatEventType.Ambushed))
+                    _tookDamage = true;
+            }
 
-                _destSet = false;
-                _shotsFired = 0;
-                ResetMoveDest();
-                FindNewCover(unit, threat, brain);
-                if (!_destSet)
-                {
-                    _coverDest = GetBestKnownPosition(unit, threat);
-                    _destSet = true;
-                }
+            // Reposition triggers -- situation-based not counter-based
+            bool lostLOS = !threat.HasLOS && threat.TimeSinceSeen > 2f;
+            bool exposedTooLong = _exposedTimer >= _repositionWindow;
+            bool hitInCover = _tookDamage;
+
+            if (lostLOS || exposedTooLong || hitInCover)
+            {
+                // Reposition to new cover -- let planner decide what to do next
+                return true;
             }
 
             return false;
         }
 
-        private void FindNewCover(StealthHuntAI unit, ThreatModel threat, TacticalBrain brain)
+        private static bool IsOccupiedBySquadmate(TacticalSpot spot,
+            StealthHuntAI unit, System.Collections.Generic.IReadOnlyList<StealthHuntAI> squad)
         {
-            _destSet = false;
-            if (TacticalSystem.Instance == null) return;
-
-            var ctx = TacticalContext.Build(unit, threat, brain);
-            TacticalSystem.Instance.EvaluateSync(ctx);
-            var all = TacticalSystem.Instance.LastCandidates;
-            if (all == null) return;
-
-            var squadUnits = HuntDirector.AllUnits;
-            foreach (var spot in all)
+            for (int i = 0; i < squad.Count; i++)
             {
-                if (spot.CoverPoint == null) continue;
-                if (Vector3.Distance(spot.Position, _coverDest) < 1.5f) continue;
-                bool tooClose = false;
-                for (int i = 0; i < squadUnits.Count; i++)
-                {
-                    var u = squadUnits[i];
-                    if (u == null || u == unit || u.squadID != unit.squadID) continue;
-                    if (Vector3.Distance(spot.Position, u.transform.position) < 2.5f)
-                    { tooClose = true; break; }
-                }
-                if (!tooClose)
-                {
-                    _coverDest = spot.Position;
-                    _destSet = true;
-                    ResetMoveDest();
-                    return;
-                }
+                var u = squad[i];
+                if (u == null || u == unit || u.squadID != unit.squadID) continue;
+                if (Vector3.Distance(spot.Position, u.transform.position) < 2.5f) return true;
             }
+            return false;
         }
     }
 

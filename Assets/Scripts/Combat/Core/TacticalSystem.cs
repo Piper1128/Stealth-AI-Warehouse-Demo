@@ -270,9 +270,18 @@ namespace StealthHuntAI.Combat
             _syncCache = new Dictionary<StealthHuntAI, (TacticalSpot, float)>();
         private const float SyncCacheInterval = 1.2f;
 
+        /// <summary>
+        /// Synchronous evaluation -- returns best spot and optionally all candidates.
+        /// Use the outCandidates overload to avoid LastCandidates race conditions
+        /// when multiple guards evaluate on the same frame.
+        /// </summary>
         public TacticalSpot EvaluateSync(TacticalContext ctx)
+            => EvaluateSync(ctx, out _);
+
+        public TacticalSpot EvaluateSync(TacticalContext ctx,
+            out List<TacticalSpot> candidates)
         {
-            var candidates = GatherCandidates(ctx);
+            candidates = GatherCandidates(ctx);
             if (candidates.Count == 0) return null;
 
             ScoreAll(candidates, ctx);
@@ -287,6 +296,9 @@ namespace StealthHuntAI.Combat
                 Novelty.RecordVisit(ctx.Unit, best.Position);
             }
 
+            // Update shared cache only if no race -- caller gets own list
+            LastCandidates = candidates;
+            LastBestSpot = best;
             return best;
         }
 
