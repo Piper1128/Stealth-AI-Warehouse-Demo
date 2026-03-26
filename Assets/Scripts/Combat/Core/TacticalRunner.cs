@@ -8,6 +8,10 @@ namespace StealthHuntAI.Combat
     /// </summary>
     public class TacticianRunner : MonoBehaviour
     {
+        [Header("Squad Coherency")]
+        [Tooltip("Max distance a guard can be from squad center before waiting for others.")]
+        [Range(5f, 40f)] public float coherencyRadius = 18f;
+
         private void Update()
         {
             var all = HuntDirector.AllUnits;
@@ -25,6 +29,7 @@ namespace StealthHuntAI.Combat
                 // Tick all brain subsystems -- null guard on WorldState
                 try
                 {
+                    brain.CoherencyRadius = coherencyRadius;
                     brain.UpdateSquadAnchor(all, u.squadID);
                     brain.Tactician.Tick(Time.deltaTime, brain, all, u.squadID);
                     brain.TickCommittedGoal();

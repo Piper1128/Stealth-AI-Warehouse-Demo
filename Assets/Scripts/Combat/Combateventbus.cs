@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace StealthHuntAI.Combat
 {
@@ -147,12 +148,24 @@ namespace StealthHuntAI.Combat
         };
 
         // ---------- Static per-unit registry ---------------------------------
+        // Auto-cleared on scene unload and domain reload.
 
         private static readonly Dictionary<StealthHuntAI, CombatEventBus> _buses
             = new Dictionary<StealthHuntAI, CombatEventBus>();
 
+        private static bool _hooksRegistered;
+
+        private static void EnsureHooks()
+        {
+            if (_hooksRegistered) return;
+            _hooksRegistered = true;
+            SceneManager.sceneUnloaded += _ => ClearAll();
+        }
+
         public static CombatEventBus Get(StealthHuntAI unit)
         {
+            if (unit == null) return null;
+            EnsureHooks();
             if (!_buses.TryGetValue(unit, out var bus))
             {
                 bus = new CombatEventBus();
@@ -160,6 +173,17 @@ namespace StealthHuntAI.Combat
             }
             return bus;
         }
+
+        /// <summary>Clear all buses -- called on scene unload.</summary>
+        public static void ClearAll()
+        {
+            _buses.Clear();
+            _hooksRegistered = false;
+        }
+
+        /// <summary>Force clear on domain reload (Editor play mode).</summary>
+        [UnityEngine.RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void DomainReload() => ClearAll();
 
         public static void RaiseSquad(int squadID, CombatEventType type,
                                        StealthHuntAI source,
@@ -175,6 +199,7 @@ namespace StealthHuntAI.Combat
             }
         }
 
+        /// <summary>Remove bus for one unit -- call on guard death.</summary>
         public static void Clear(StealthHuntAI unit)
             => _buses.Remove(unit);
     }

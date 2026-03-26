@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using StealthHuntAI.Combat.CQB;
 using UnityEngine.AI;
 
@@ -115,12 +116,24 @@ namespace StealthHuntAI.Combat
         }
 
         // ---------- Static registry ------------------------------------------
+        // Cleared automatically on scene unload -- no stale references
+        // between play sessions.
 
         private static readonly Dictionary<int, TacticalBrain> _brains
             = new Dictionary<int, TacticalBrain>();
 
+        private static bool _hooksRegistered;
+
+        private static void EnsureHooks()
+        {
+            if (_hooksRegistered) return;
+            _hooksRegistered = true;
+            SceneManager.sceneUnloaded += _ => Clear();
+        }
+
         public static TacticalBrain GetOrCreate(int squadID)
         {
+            EnsureHooks();
             if (!_brains.TryGetValue(squadID, out var brain))
             {
                 brain = new TacticalBrain();
@@ -129,9 +142,15 @@ namespace StealthHuntAI.Combat
             return brain;
         }
 
+        /// <summary>Clear all brains -- called automatically on scene unload.</summary>
         public static void Clear()
         {
             _brains.Clear();
+            _hooksRegistered = false;
         }
+
+        /// <summary>Force clear on domain reload (Editor play mode).</summary>
+        [UnityEngine.RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void DomainReload() => Clear();
     }
 }

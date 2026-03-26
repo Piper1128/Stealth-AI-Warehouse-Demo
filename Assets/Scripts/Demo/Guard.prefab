@@ -1556,7 +1556,7 @@ MonoBehaviour:
   shootLayers:
     serializedVersion: 2
     m_Bits: 960
-  aimInTime: 0.7
+  aimInTime: 0.3
   aimInSpreadMax: 0.3
 --- !u!114 &4122779359751285265
 MonoBehaviour:
@@ -1573,8 +1573,8 @@ MonoBehaviour:
   preset: {fileID: 0}
   sightRange: 60
   sightAngle: 120
-  hearingRange: 40
-  sightDetectionSpeed: 1.5
+  hearingRange: 20
+  sightDetectionSpeed: 2
   sightDecaySpeed: 0.2
   suspicionThreshold: 0.15
   hostileThreshold: 0.7
@@ -1598,7 +1598,7 @@ MonoBehaviour:
   searchHeightRange: 1
   movementProvider: {fileID: 0}
   searchStrategyOverride: {fileID: 0}
-  visitedCellSize: 3
+  visitedCellSize: 6
   squadID: 0
   manualRole: 0
   animator: {fileID: 3206335837847422642}
@@ -1690,15 +1690,15 @@ MonoBehaviour:
   reactionTime: 0.05
   sightRiseSpeed: 3
   sightDecaySpeed: 0.1
-  hearingRange: 40
+  hearingRange: 20
   hearingRiseSpeed: 3
-  soundSuspicionThreshold: 0.01
+  soundSuspicionThreshold: 0.1
   soundHostileThreshold: 1
   useLightDetection: 1
   darknessThreshold: 0.3
   darknessFactor: 0.2
   lightSearchRadius: 12
-  decaySpeed: 0.1
+  decaySpeed: 0.02
   noiseAmount: 0.05
   sightBlockers:
     serializedVersion: 2

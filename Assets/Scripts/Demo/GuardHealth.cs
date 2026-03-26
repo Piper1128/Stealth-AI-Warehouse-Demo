@@ -228,6 +228,8 @@ namespace StealthHuntAI.Demo
         {
             IsDead = true;
             _ai?.SetDead();
+            // Clear event bus -- remove stale reference from static registry
+            if (_ai != null) CombatEventBus.Clear(_ai);
             // Alert squad that a buddy is down
             if (_ai != null)
                 CombatEventBus.RaiseSquad(_ai.squadID,
